@@ -2076,7 +2076,7 @@ const LANGS = [
 ]
 const LANG_KEY = 'gitx.lang'
 const pickLang = (v) => (LOCALES[v] || v === 'en' ? v : 'en')
-// The worker owns the setting; the last value is kept here so the first paint is already in that language.
+// The worker keeps the choice; the last value is kept here so the first paint is already in that language.
 let LANG = 'en'
 try {
   LANG = pickLang(localStorage.getItem(LANG_KEY) || 'en')
@@ -2087,8 +2087,8 @@ function t(s, vars) {
   if (vars) out = out.replace(/\{(\w+)\}/g, (m, k) => (k in vars ? String(vars[k]) : m))
   return out
 }
-// The language dropdown at the top right: a globe and the language's own name. The choice is saved in
-// Orca's plugin settings (and kept here for the next start), so it is remembered.
+// The language button at the top right: a globe and the language's code. The choice belongs to Git Control
+// (the plugin's own storage, and kept here for the next start), not to Orca's settings.
 function langPicker() {
   const sel = h(
     'select',
@@ -2105,7 +2105,7 @@ function langPicker() {
   const code = h('span', { class: 'lang-code' }, LANG === 'zh-CN' ? '中' : LANG.toUpperCase())
   return h('label', { class: 'icon-btn lang-pick', title: t('Language') }, icon('globe', 14), code, sel)
 }
-// Applies a language picked in Orca's settings or in Git Control's Settings tab: strings are built once, so reload.
+// Applies a language picked with the globe (or in another Git Control window): strings are built once, so reload.
 function applyLang(v) {
   const next = pickLang(v || 'en')
   try {
@@ -10967,7 +10967,7 @@ document.addEventListener('keydown', (e) => {
 })
 
 // Pick up the language setting; a change since the last start reloads once in the new language.
-if (hasOrca) request('ui.language', {}, 10000).then((r) => applyLang(r?.lang)).catch(() => {})
+if (hasOrca) request('ui.language', {}, 10000).then((r) => r?.lang && applyLang(r.lang)).catch(() => {})
 
 ;(async () => {
   // opened from the status bar (MR/PR, Overview): asked before anything is drawn, so the tab opens
