@@ -33,6 +33,58 @@ const clear = (el) => {
   return el
 }
 
+/* =========================================================================
+   i18n: the t function looks the English text up in the chosen language and falls back to English.
+   The English text is the key, so the code stays readable. Translations live in panel/locales/<lang>.json;
+   tools/build.mjs inlines them here (LOCALES) and tools/i18n.mjs checks every language has every key.
+   ========================================================================= */
+const LOCALES = /*@locales*/ {} /*@end*/
+const LANGS = [
+  ['en', 'English'],
+  ['zh-CN', '简体中文'],
+  ['ja', '日本語'],
+  ['es', 'Español'],
+  ['th', 'ไทย']
+]
+const LANG_KEY = 'gitx.lang'
+const pickLang = (v) => (LOCALES[v] || v === 'en' ? v : 'en')
+// The worker owns the setting; the last value is kept here so the first paint is already in that language.
+let LANG = 'en'
+try {
+  LANG = pickLang(localStorage.getItem(LANG_KEY) || 'en')
+} catch {}
+const DICT = LOCALES[LANG] || {}
+function t(s, vars) {
+  let out = DICT[s] || s
+  if (vars) out = out.replace(/\{(\w+)\}/g, (m, k) => (k in vars ? String(vars[k]) : m))
+  return out
+}
+// The language dropdown at the top right: a globe and the language's own name. The choice is saved in
+// Orca's plugin settings (and kept here for the next start), so it is remembered.
+function langPicker() {
+  const sel = h(
+    'select',
+    {
+      class: 'lang-select',
+      'aria-label': t('Language'),
+      onChange: () => {
+        const v = sel.value
+        request('ui.language', { lang: v }, 10000).then(() => applyLang(v), () => applyLang(v))
+      }
+    },
+    LANGS.map(([v, l]) => h('option', { value: v, selected: v === LANG }, l))
+  )
+  return h('label', { class: 'lang-pick', title: t('Language') }, icon('globe', 14), sel)
+}
+// Applies a language picked in Orca's settings or in Git Control's Settings tab: strings are built once, so reload.
+function applyLang(v) {
+  const next = pickLang(v || 'en')
+  try {
+    localStorage.setItem(LANG_KEY, next)
+  } catch {}
+  if (next !== LANG) location.reload()
+}
+
 const ICONS = {
   wand: '<path d="m21.64 3.64-1.28-1.28a1.21 1.21 0 0 0-1.72 0L2.36 18.64a1.21 1.21 0 0 0 0 1.72l1.28 1.28a1.2 1.2 0 0 0 1.72 0L21.64 5.36a1.2 1.2 0 0 0 0-1.72"/><path d="m14 7 3 3"/><path d="M5 6v4"/><path d="M19 14v4"/><path d="M10 2v2"/><path d="M7 8H3"/><path d="M21 16h-4"/><path d="M11 3H9"/>',
   menu: '<path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h16"/>',
@@ -101,21 +153,21 @@ const dirname = (p) => {
   const i = p.lastIndexOf('/')
   return i < 0 ? '' : p.slice(0, i)
 }
-function ago(t) {
-  const s = Date.now() / 1000 - t
-  if (s < 60) return 'just now'
+function ago(ts) {
+  const s = Date.now() / 1000 - ts
+  if (s < 60) return t('just now')
   const units = [
-    [31536000, 'y'],
-    [2592000, 'mo'],
-    [604800, 'w'],
-    [86400, 'd'],
-    [3600, 'h'],
-    [60, 'm']
+    [31536000, (n) => t('{n}y ago', { n })],
+    [2592000, (n) => t('{n}mo ago', { n })],
+    [604800, (n) => t('{n}w ago', { n })],
+    [86400, (n) => t('{n}d ago', { n })],
+    [3600, (n) => t('{n}h ago', { n })],
+    [60, (n) => t('{n}m ago', { n })]
   ]
-  for (const [n, u] of units) if (s >= n) return `${Math.floor(s / n)}${u} ago`
+  for (const [n, u] of units) if (s >= n) return u(Math.floor(s / n))
   return ''
 }
-const fullDate = (t) => new Date(t * 1000).toLocaleString()
+const fullDate = (t) => new Date(t * 1000).toLocaleString(LANG)
 
 /* =========================================================================
    worker bridge
@@ -127,7 +179,7 @@ let docRepo = null
 const ignoredGraphIn = new Set()
 
 async function request(name, input, timeoutMs = 30000) {
-  if (!hasOrca) throw new Error('Open this panel inside Orca')
+  if (!hasOrca) throw new Error(t('Open this panel inside Orca'))
   input = JSON.parse(JSON.stringify(input ?? {})) // drop undefined values: Orca rejects them as invalid input
   try {
     if (window.orca.plugin?.request) return await window.orca.plugin.request(name, input, { timeoutMs })
@@ -147,8 +199,8 @@ function pluginUpdated() {
     'div',
     { class: 'update-bar' },
     icon('refresh', 13),
-    h('span', { class: 'grow' }, 'Git Control was updated. Reload this tab to use the new version (approve it in Orca first if it asks).'),
-    h('button', { class: 'btn sm primary', onClick: () => location.reload() }, icon('refresh', 12), 'Reload')
+    h('span', { class: 'grow' }, t('Git Control was updated. Reload this tab to use the new version (approve it in Orca first if it asks).')),
+    h('button', { class: 'btn sm primary', onClick: () => location.reload() }, icon('refresh', 12), t('Reload'))
   )
   document.body.prepend(bar)
 }
@@ -229,7 +281,7 @@ function mountOverlay(overlay, dispose, stack = false) {
 }
 
 /** fields: [{ key, label, value, placeholder, type: 'text'|'textarea'|'select'|'check', options: [[value,label]], hint }] */
-function dialog({ title, message, fields = [], ok = 'OK', danger = false, cancel = 'Cancel', stack = false }) {
+function dialog({ title, message, fields = [], ok = t('OK'), danger = false, cancel = t('Cancel'), stack = false }) {
   if (stack) closeOverlays('.menu')
   else closeOverlays()
   return new Promise((resolve) => {
@@ -286,7 +338,7 @@ function dialog({ title, message, fields = [], ok = 'OK', danger = false, cancel
  */
 function combo(input, items) {
   const list = h('div', { class: 'combo-list', role: 'listbox' })
-  const caret = h('button', { type: 'button', class: 'combo-caret', tabindex: '-1', 'aria-label': 'Show suggestions', onMousedown: (e) => (e.preventDefault(), list.hidden ? (input.focus(), show(true)) : hide()) }, icon('down', 12))
+  const caret = h('button', { type: 'button', class: 'combo-caret', tabindex: '-1', 'aria-label': t('Show suggestions'), onMousedown: (e) => (e.preventDefault(), list.hidden ? (input.focus(), show(true)) : hide()) }, icon('down', 12))
   const wrap = h('div', { class: 'combo' }, input, caret, list)
   input.setAttribute('role', 'combobox')
   input.setAttribute('aria-autocomplete', 'list')
@@ -300,7 +352,7 @@ function combo(input, items) {
   }
   const draw = () => {
     clear(list)
-    if (!shown.length) return list.append(h('div', { class: 'combo-empty' }, 'No match: type the host or user@host'))
+    if (!shown.length) return list.append(h('div', { class: 'combo-empty' }, t('No match: type the host or user@host')))
     shown.forEach((it, i) =>
       list.append(
         h(
@@ -353,7 +405,7 @@ function combo(input, items) {
 }
 
 /** Asked from inside an open modal, the confirm stacks over it: Cancel returns to the modal intact. */
-const confirmBox = (title, message, ok = 'Confirm', danger = false) =>
+const confirmBox = (title, message, ok = t('Confirm'), danger = false) =>
   dialog({ title, message, ok, danger, stack: !!document.querySelector('.overlay') }).then((r) => r !== null)
 
 /** A right-click opens the row's menu at the pointer; `menu` reads it once. */
@@ -510,7 +562,7 @@ async function openLink(url) {
   const w = window.open(url, '_blank', 'noopener')
   if (!w) {
     await copy(url)
-    toast('The link was copied: paste it into your browser.')
+    toast(t('The link was copied: paste it into your browser.'))
   }
 }
 /** Run an op with a spinner and error toast, then refresh. Returns the result, or undefined on failure. */
@@ -532,7 +584,7 @@ async function run(op, args, { success, refresh = true, quiet = false } = {}) {
     // A conflict is a normal step, not a failure: say what happens next instead of git's error text.
     const files = [...msg.matchAll(/CONFLICT \([^)]*\): (?:Merge conflict in )?(\S+)/g)].map((m) => m[1])
     if (files.length || /fix conflicts and then commit|could not apply|after resolving the conflicts/i.test(msg))
-      toast(`${files.length ? `${files.length} file${files.length > 1 ? 's' : ''} changed` : 'Some files changed'} on both sides. Pick what to keep in each, then commit.`, 'ok', 7000)
+      toast(files.length > 1 ? t('{n} files changed on both sides. Pick what to keep in each, then commit.', { n: files.length }) : files.length ? t('{n} file changed on both sides. Pick what to keep in each, then commit.', { n: files.length }) : t('Some files changed on both sides. Pick what to keep in each, then commit.'), 'ok', 7000)
     else toast(msg, 'error')
     return undefined
   } finally {
@@ -547,13 +599,14 @@ const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`
 const SYNC_NOTE = {
   fetch: (b, a, done) => {
     const n = (a.behind || 0) - b.behind
-    if (!a.upstream) return `${done || 'Fetched'} · this branch has no remote branch`
-    if (n > 0) return `${done || 'Fetched'} · ${plural(n, 'new commit')} on ${a.upstream} to pull`
-    if (a.behind) return `${done || 'Fetched'} · nothing new · ${plural(a.behind, 'commit')} still to pull`
-    return `${done || 'Fetched'} · already up to date`
+    done = done || t('Fetched')
+    if (!a.upstream) return t('{done} · this branch has no remote branch', { done })
+    if (n > 0) return n === 1 ? t('{done} · {n} new commit on {upstream} to pull', { done, n, upstream: a.upstream }) : t('{done} · {n} new commits on {upstream} to pull', { done, n, upstream: a.upstream })
+    if (a.behind) return a.behind === 1 ? t('{done} · nothing new · {n} commit still to pull', { done, n: a.behind }) : t('{done} · nothing new · {n} commits still to pull', { done, n: a.behind })
+    return t('{done} · already up to date', { done })
   },
-  pull: (b, a, done) => (a.oid && a.oid !== b.oid ? `${done || 'Pulled'} · ${b.behind ? plural(b.behind, 'commit') + ' · ' : ''}now at ${a.oid.slice(0, 7)}` : 'Already up to date · nothing to pull'),
-  push: (b, a, done, args) => (args.branch && args.branch !== a.branch ? done || 'Pushed' : b.ahead > 0 || !b.upstream ? `${done || 'Pushed'}${b.ahead ? ' · ' + plural(b.ahead, 'commit') : ''}` : `${done || 'Pushed'} · ${a.upstream || 'the remote'} was already up to date`)
+  pull: (b, a, done) => (a.oid && a.oid !== b.oid ? (!b.behind ? t('{done} · now at {hash}', { done: done || t('Pulled'), hash: a.oid.slice(0, 7) }) : b.behind === 1 ? t('{done} · {n} commit · now at {hash}', { done: done || t('Pulled'), n: b.behind, hash: a.oid.slice(0, 7) }) : t('{done} · {n} commits · now at {hash}', { done: done || t('Pulled'), n: b.behind, hash: a.oid.slice(0, 7) })) : t('Already up to date · nothing to pull')),
+  push: (b, a, done, args) => (args.branch && args.branch !== a.branch ? done || t('Pushed') : b.ahead > 0 || !b.upstream ? (!b.ahead ? done || t('Pushed') : b.ahead === 1 ? t('{done} · {n} commit', { done: done || t('Pushed'), n: b.ahead }) : t('{done} · {n} commits', { done: done || t('Pushed'), n: b.ahead })) : t('{done} · {remote} was already up to date', { done: done || t('Pushed'), remote: a.upstream || t('the remote') }))
 }
 /** Which toolbar buttons are busy (spinning) and which just finished (a short tick). */
 const working = new Set()
@@ -610,7 +663,7 @@ function renderFolderBar() {
   const f = state.folder
   if (!f) return bar?.remove()
   if (!bar) {
-    bar = h('div', { id: 'folderBar', class: 'folder-bar', role: 'tablist', 'aria-label': 'Repositories in this folder' })
+    bar = h('div', { id: 'folderBar', class: 'folder-bar', role: 'tablist', 'aria-label': t('Repositories in this folder') })
     const header = document.querySelector('header') || document.querySelector('#toolbar')?.closest('header, .header, .top')
     if (header) header.after(bar)
     else document.body.prepend(bar)
@@ -623,13 +676,13 @@ function renderFolderBar() {
     ...shown.map((c) =>
       h(
         'button',
-        { class: `folder-tab ${cur(c) ? 'on' : ''}`, role: 'tab', 'aria-selected': cur(c) ? 'true' : 'false', title: `${c.path}${c.branch ? `\non ${c.branch}` : ''}`, onClick: () => pickFolderRepo(c.path) },
+        { class: `folder-tab ${cur(c) ? 'on' : ''}`, role: 'tab', 'aria-selected': cur(c) ? 'true' : 'false', title: c.branch ? t('{path}\non {branch}', { path: c.path, branch: c.branch }) : c.path, onClick: () => pickFolderRepo(c.path) },
         h('span', { class: 'folder-tab-name' }, c.name),
         c.branch ? h('span', { class: 'folder-tab-branch' }, c.branch) : null
       )
     ),
     rest.length
-      ? h('button', { class: `folder-tab more ${rest.some(cur) ? 'on' : ''}`, title: 'More repositories in this folder', onClick: (e) => menu(e.currentTarget, rest.map((c) => ({ label: c.name, hint: c.branch, icon: cur(c) ? 'check' : 'branch', onClick: () => pickFolderRepo(c.path) }))) }, `+${rest.length}`, icon('down', 10))
+      ? h('button', { class: `folder-tab more ${rest.some(cur) ? 'on' : ''}`, title: t('More repositories in this folder'), onClick: (e) => menu(e.currentTarget, rest.map((c) => ({ label: c.name, hint: c.branch, icon: cur(c) ? 'check' : 'branch', onClick: () => pickFolderRepo(c.path) }))) }, `+${rest.length}`, icon('down', 10))
       : null,
   ].filter(Boolean))
 }
@@ -806,16 +859,16 @@ repoMenu.draw = (anchor) => {
   return menu(anchor, [
     ...(f
       ? [
-          { header: `In ${basename(f.path)}` },
+          { header: t('In {folder}', { folder: basename(f.path) }) },
           ...f.children.map((c) => ({ label: c.name, hint: c.branch || '', icon: sameRepoPath(c.path, state.repo || '') ? 'check' : 'branch', onClick: () => pickFolderRepo(c.path) })),
           '-'
         ]
       : []),
-    { label: 'Repo Overview', icon: 'grid', onClick: () => reposOverview() },
+    { label: t('Repo Overview'), icon: 'grid', onClick: () => reposOverview() },
     '-',
-    { header: 'Repository' },
+    { header: t('Repository') },
     {
-      label: 'Follow focused workspace',
+      label: t('Follow focused workspace'),
       icon: state.pinned ? null : 'check',
       onClick: async () => {
         state.pinned = null
@@ -830,23 +883,23 @@ repoMenu.draw = (anchor) => {
       { header: repoName },
       ...list.map((w) => ({
         label: w.branch || w.name,
-        hint: list.length > 1 && w.main ? 'main folder' : '',
+        hint: list.length > 1 && w.main ? t('main folder') : '',
         icon: state.repo && sameRepoPath(state.repo, w.path) ? 'check' : w.host ? 'server' : w.kind === 'worktree' ? 'branch' : 'folder',
         onClick: () => pinRepo(w.path)
       }))
     ]),
     ws.length ? '-' : null,
-    scanning ? { label: 'Looking for projects on servers…', icon: 'refresh', disabled: true } : null,
-    { label: 'Servers…', icon: 'server', hint: serversHint(), onClick: openServers },
-    { label: 'Clone repository…', icon: 'download', onClick: cloneRepo },
+    scanning ? { label: t('Looking for projects on servers…'), icon: 'refresh', disabled: true } : null,
+    { label: t('Servers…'), icon: 'server', hint: serversHint(), onClick: openServers },
+    { label: t('Clone repository…'), icon: 'download', onClick: cloneRepo },
     {
-      label: 'Open path…',
+      label: t('Open path…'),
       icon: 'folder',
       onClick: async () => {
         const r = await dialog({
-          title: 'Open repository',
-          fields: [{ key: 'path', label: 'Folder path', value: state.repo || '', placeholder: 'C:\\code\\my-repo' }],
-          ok: 'Open'
+          title: t('Open repository'),
+          fields: [{ key: 'path', label: t('Folder path'), value: state.repo || '', placeholder: 'C:\\code\\my-repo' }],
+          ok: t('Open')
         })
         if (!r?.path) return
         const chk = await request('repo.check', { path: r.path.trim() })
@@ -859,7 +912,7 @@ repoMenu.draw = (anchor) => {
           renderAll()
           refreshAll()
         } else {
-          const init = await confirmBox('Not a Git repository', `${r.path}\n\nInitialize a new repository here?`, 'git init')
+          const init = await confirmBox(t('Not a Git repository'), t('{path}\n\nInitialize a new repository here?', { path: r.path }), 'git init')
           if (init) {
             await request('git', { op: 'init', args: { path: r.path.trim() } }).catch((e) => toast(e.message, 'error'))
             pinRepo(r.path.trim())
@@ -873,11 +926,11 @@ repoMenu.draw = (anchor) => {
    Repos overview: every local repository at once
    ========================================================================= */
 const ROV_FILTERS = [
-  ['failed', 'last command failed', (r) => rovState.errors.has(r.path)],
-  ['attention', 'need attention', (r) => rovScore(r) >= 3],
-  ['changes', 'with changes', (r) => r.changes > 0],
-  ['behind', 'behind', (r) => r.behind > 0],
-  ['ahead', 'to push', (r) => r.ahead > 0]
+  ['failed', t('last command failed'), (r) => rovState.errors.has(r.path)],
+  ['attention', t('need attention'), (r) => rovScore(r) >= 3],
+  ['changes', t('with changes'), (r) => r.changes > 0],
+  ['behind', t('behind'), (r) => r.behind > 0],
+  ['ahead', t('to push'), (r) => r.ahead > 0]
 ]
 /** Higher first: something to fix, then something to do, then clean ones. */
 function rovScore(r) {
@@ -926,8 +979,8 @@ async function tagManyModal(repos, onDone) {
   const table = h('div', { class: 'tm-table' }, h('div', { class: 'inline-skeleton', style: { margin: '12px' } }, h('span'), h('span')))
   const status = h('div', { class: 'tm-status dim' })
   const push = h('input', { type: 'checkbox', checked: prefs.push !== false })
-  const msgIn = h('input', { type: 'text', placeholder: 'A message makes annotated tags' })
-  const okBtn = h('button', { type: 'button', class: 'btn primary', disabled: true, onClick: () => apply() }, icon('tag', 13), 'Create tags')
+  const msgIn = h('input', { type: 'text', placeholder: t('A message makes annotated tags') })
+  const okBtn = h('button', { type: 'button', class: 'btn primary', disabled: true, onClick: () => apply() }, icon('tag', 13), t('Create tags'))
 
   const close = () => {
     overlay.remove()
@@ -937,12 +990,12 @@ async function tagManyModal(repos, onDone) {
   const box = h(
     'div',
     { class: 'dialog tag-many-dialog', role: 'dialog' },
-    h('div', { class: 'ai-title' }, h('span', { class: 'tm-badge' }, icon('tag', 14)), h('div', null, h('h3', null, repos.length === 1 ? `Tag ${repos[0].name}` : `Tag ${repos.length} repositories`), h('p', null, 'Everything is filled in: check the new tag, then create.'))),
+    h('div', { class: 'ai-title' }, h('span', { class: 'tm-badge' }, icon('tag', 14)), h('div', null, h('h3', null, repos.length === 1 ? t('Tag {name}', { name: repos[0].name }) : t('Tag {n} repositories', { n: repos.length })), h('p', null, t('Everything is filled in: check the new tag, then create.')))),
     // the whole choice as one sentence
-    h('div', { class: 'tm-sentence' }, 'Create', patternSel, 'tags on branch', branchSel, h('span', { class: 'dim' }, 'as pushed to origin')),
+    h('div', { class: 'tm-sentence' }, t('Create'), patternSel, t('tags on branch'), branchSel, h('span', { class: 'dim' }, t('as pushed to origin'))),
     table,
-    h('div', { class: 'tm-opts' }, h('label', { class: 'check' }, push, 'Push the tags'), h('details', { class: 'tm-more' }, h('summary', null, 'Message'), msgIn), h('span', { class: 'grow' }), status),
-    h('div', { class: 'buttons' }, h('button', { type: 'button', class: 'btn', onClick: () => !busy && close() }, 'Close'), h('span', { class: 'grow' }), okBtn)
+    h('div', { class: 'tm-opts' }, h('label', { class: 'check' }, push, t('Push the tags')), h('details', { class: 'tm-more' }, h('summary', null, t('Message')), msgIn), h('span', { class: 'grow' }), status),
+    h('div', { class: 'buttons' }, h('button', { type: 'button', class: 'btn', onClick: () => !busy && close() }, t('Close')), h('span', { class: 'grow' }), okBtn)
   )
   const overlay = h('div', { class: 'overlay', onMousedown: (e) => e.target === overlay && !busy && close() }, box)
   mountOverlay(overlay, close)
@@ -971,12 +1024,12 @@ async function tagManyModal(repos, onDone) {
   const fillPatterns = () => {
     clear(patternSel)
     for (const p of [...new Set([...pats, pattern, 'v*'])]) patternSel.append(h('option', { value: p, selected: p === pattern }, p))
-    patternSel.append(h('option', { value: '__new' }, 'Another pattern…'))
+    patternSel.append(h('option', { value: '__new' }, t('Another pattern…')))
   }
   fillPatterns()
   patternSel.addEventListener('change', async () => {
     if (patternSel.value === '__new') {
-      const r = await dialog({ title: 'Tag pattern', message: 'The part before the version, then *, e.g. v*, dev_v*, release-*', fields: [{ key: 'p', label: 'Pattern', value: pattern }], ok: 'Use', stack: true })
+      const r = await dialog({ title: t('Tag pattern'), message: t('The part before the version, then *, e.g. v*, dev_v*, release-*'), fields: [{ key: 'p', label: t('Pattern'), value: pattern }], ok: t('Use'), stack: true })
       if (r?.p && /^[\w.*/-]+$/.test(r.p.trim())) pattern = r.p.trim()
       fillPatterns()
     } else pattern = patternSel.value
@@ -989,7 +1042,7 @@ async function tagManyModal(repos, onDone) {
   for (const r of repos) if (r.branch) onNow.set(r.branch, (onNow.get(r.branch) || 0) + 1)
   top = prefs.branch && count.get(prefs.branch) === paths.length ? prefs.branch : [...onNow.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || [...count.keys()][0] || 'main'
   const names = [...count.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([b]) => b).slice(0, 300)
-  for (const b of names) branchSel.append(h('option', { value: b, selected: b === top }, paths.length > 1 ? `${b}  (${count.get(b)} of ${paths.length})` : b))
+  for (const b of names) branchSel.append(h('option', { value: b, selected: b === top }, paths.length > 1 ? t('{branch}  ({n} of {total})', { branch: b, n: count.get(b), total: paths.length }) : b))
   branchSel.addEventListener('change', () => ((top = branchSel.value), own.clear(), loadPlan()))
 
   async function loadPlan() {
@@ -1008,7 +1061,7 @@ async function tagManyModal(repos, onDone) {
   const inputs = new Map()
   function drawTable() {
     inputs.clear()
-    clear(table).append(h('div', { class: 'tm-row tm-head' }, h('span'), h('span', null, 'Repository'), h('span', null, 'Branch'), h('span', null, `Newest ${pattern}`), h('span', null, 'New tag')))
+    clear(table).append(h('div', { class: 'tm-row tm-head' }, h('span'), h('span', null, t('Repository')), h('span', null, t('Branch')), h('span', null, t('Newest {pattern}', { pattern })), h('span', null, t('New tag'))))
     for (const row of plan) {
       const done = row.already?.length
       const b = branchFor(row.repo)
@@ -1016,7 +1069,7 @@ async function tagManyModal(repos, onDone) {
       const name = h('input', { type: 'text', class: 'tm-name mono', value: row.next || '', spellcheck: 'false' })
       name.addEventListener('input', () => ((take.checked = !!name.value.trim()), countUp()))
       take.addEventListener('change', countUp)
-      const sel = h('select', { class: 'tm-row-branch mono', title: 'The branch to tag in this repository' })
+      const sel = h('select', { class: 'tm-row-branch mono', title: t('The branch to tag in this repository') })
       for (const x of [...(branchesOf.get(row.repo) || [])].sort((a, c) => (a === b ? -1 : c === b ? 1 : a.localeCompare(c)))) sel.append(h('option', { value: x, selected: x === b }, x))
       sel.addEventListener('change', () => (own.set(row.repo, sel.value), loadPlan()))
       const fallback = !own.has(row.repo) && b !== top
@@ -1033,10 +1086,10 @@ async function tagManyModal(repos, onDone) {
             sel,
             row.error
               ? h('span', { class: 'bad' }, icon('alert', 11), row.error)
-              : h('span', { class: 'dim ellipsis', title: `${row.at} · ${row.hash}\n${row.subject || ''}` }, fallback ? `no ${top} here · ` : '', `${(row.hash || '').slice(0, 7)} ${row.subject || ''}`)
+              : h('span', { class: 'dim ellipsis', title: `${row.at} · ${row.hash}\n${row.subject || ''}` }, fallback ? t('no {branch} here · ', { branch: top }) : '', `${(row.hash || '').slice(0, 7)} ${row.subject || ''}`)
           ),
-          h('span', { class: 'tm-latest mono' }, row.latest || h('span', { class: 'dim' }, 'none yet')),
-          h('span', { class: 'tm-new' }, done ? h('span', { class: 'pill tm-already', title: `That commit already has ${row.already[0]}: nothing to do` }, icon('check', 10), `Already ${row.already[0]}`) : row.error ? h('span', { class: 'dim' }, '–') : [h('span', { class: 'tm-arrow dim' }, '→'), name])
+          h('span', { class: 'tm-latest mono' }, row.latest || h('span', { class: 'dim' }, t('none yet'))),
+          h('span', { class: 'tm-new' }, done ? h('span', { class: 'pill tm-already', title: t('That commit already has {tag}: nothing to do', { tag: row.already[0] }) }, icon('check', 10), t('Already {tag}', { tag: row.already[0] })) : row.error ? h('span', { class: 'dim' }, '–') : [h('span', { class: 'tm-arrow dim' }, '→'), name])
         )
       )
     }
@@ -1045,17 +1098,17 @@ async function tagManyModal(repos, onDone) {
   function countUp() {
     const take = [...inputs.values()].filter((x) => x.take.checked && x.name.value.trim())
     okBtn.disabled = busy || !take.length
-    clear(okBtn).append(icon('tag', 13), take.length ? `Create ${take.length} tag${take.length > 1 ? 's' : ''}${push.checked ? ' and push' : ''}` : 'Nothing to tag')
+    clear(okBtn).append(icon('tag', 13), take.length ? (take.length > 1 ? (push.checked ? t('Create {n} tags and push', { n: take.length }) : t('Create {n} tags', { n: take.length })) : push.checked ? t('Create {n} tag and push', { n: take.length }) : t('Create {n} tag', { n: take.length })) : t('Nothing to tag'))
     const done = plan ? plan.filter((r) => r.already?.length).length : 0
-    status.textContent = plan ? [done ? `${done} already tagged` : '', plan.some((r) => r.error) ? `${plan.filter((r) => r.error).length} cannot` : ''].filter(Boolean).join(' · ') : ''
+    status.textContent = plan ? [done ? t('{n} already tagged', { n: done }) : '', plan.some((r) => r.error) ? t('{n} cannot', { n: plan.filter((r) => r.error).length }) : ''].filter(Boolean).join(' · ') : ''
   }
   push.addEventListener('change', countUp)
 
   async function apply() {
     const take = [...inputs.values()].filter((x) => x.take.checked && x.name.value.trim())
     if (!take.length) return
-    const list = take.map((x) => `  • ${byPath.get(x.row.repo)?.name || x.row.name}: ${x.name.value.trim()} on ${x.row.at} (${x.row.hash.slice(0, 7)})`).join('\n')
-    if (!(await confirmBox(`Create ${take.length} tag${take.length > 1 ? 's' : ''}?`, `${list}${push.checked ? '\n\nEach is pushed to its remote.' : ''}`, push.checked ? 'Create and push' : 'Create'))) return
+    const list = take.map((x) => t('  • {repo}: {tag} on {branch} ({hash})', { repo: byPath.get(x.row.repo)?.name || x.row.name, tag: x.name.value.trim(), branch: x.row.at, hash: x.row.hash.slice(0, 7) })).join('\n')
+    if (!(await confirmBox(take.length > 1 ? t('Create {n} tags?', { n: take.length }) : t('Create {n} tag?', { n: take.length }), `${list}${push.checked ? '\n\n' + t('Each is pushed to its remote.') : ''}`, push.checked ? t('Create and push') : t('Create')))) return
     store.set('tagManyPrefs', { pattern, branch: top, push: push.checked })
     busy = true
     countUp()
@@ -1072,12 +1125,12 @@ async function tagManyModal(repos, onDone) {
       if (!el) continue
       el.classList.remove('working')
       el.classList.add(r.ok ? 'made' : 'failed')
-      el.querySelector('.tm-new').replaceChildren(r.ok ? h('span', { class: 'pill tm-made' }, icon('check', 10), `${r.name}${r.pushed ? ' · pushed' : ''}`) : h('span', { class: 'bad', title: r.error }, icon('alert', 11), r.error))
+      el.querySelector('.tm-new').replaceChildren(r.ok ? h('span', { class: 'pill tm-made' }, icon('check', 10), r.pushed ? t('{tag} · pushed', { tag: r.name }) : r.name) : h('span', { class: 'bad', title: r.error }, icon('alert', 11), r.error))
     }
     const good = res.filter((r) => r.ok).length
-    toast(good === res.length ? `Tagged ${good} repositor${good === 1 ? 'y' : 'ies'}` : `Tagged ${good} of ${res.length}`, good === res.length ? 'ok' : 'error')
+    toast(good === res.length ? (good === 1 ? t('Tagged {n} repository', { n: good }) : t('Tagged {n} repositories', { n: good })) : t('Tagged {n} of {total}', { n: good, total: res.length }), good === res.length ? 'ok' : 'error')
     okBtn.disabled = true
-    clear(okBtn).append(icon('check', 13), 'Done')
+    clear(okBtn).append(icon('check', 13), t('Done'))
     onDone?.()
   }
 
@@ -1099,9 +1152,9 @@ async function viewRepos() {
   let data = rovState.data
   let filter = rovState.filter
   let text = rovState.text
-  const refreshBtn = h('button', { class: 'btn sm rov-refresh', title: 'Read every repository again', onClick: () => load() }, rovState.loading ? h('span', { class: 'spinner sm' }) : icon('refresh', 12), 'Refresh')
+  const refreshBtn = h('button', { class: 'btn sm rov-refresh', title: t('Read every repository again'), onClick: () => load() }, rovState.loading ? h('span', { class: 'spinner sm' }) : icon('refresh', 12), t('Refresh'))
   root.append(
-    h('div', { class: 'rov-top' }, h('div', { class: 'rov-heading' }, h('h2', null, 'Repo Overview'), h('span', { class: 'dim' }, 'Every repository at once')), h('span', { class: 'grow' }), refreshBtn),
+    h('div', { class: 'rov-top' }, h('div', { class: 'rov-heading' }, h('h2', null, t('Repo Overview')), h('span', { class: 'dim' }, t('Every repository at once'))), h('span', { class: 'grow' }), refreshBtn),
     body
   )
   // what a command acts on: the ticked repos, or every one shown when none is ticked
@@ -1162,7 +1215,7 @@ async function viewRepos() {
     const d = state.reviews
     if (!d) {
       loadReviews().then(() => state.tab === 'repos' && document.querySelector('.rov-page')?.dispatchEvent(new Event('rov-summary')), () => {})
-      return h('div', { class: 'rov-health rov-mr' }, h('div', { class: 'rov-health-head' }, h('span', { class: 'rov-tile-label' }, 'Merge requests'), h('span', { class: 'dim' }, h('span', { class: 'spinner sm' }), ' loading')))
+      return h('div', { class: 'rov-health rov-mr' }, h('div', { class: 'rov-health-head' }, h('span', { class: 'rov-tile-label' }, t('Merge requests')), h('span', { class: 'dim' }, h('span', { class: 'spinner sm' }), ' ', t('loading'))))
     }
     const open = (d.items || []).filter(isOpenMr)
     const go = (filter) => () => ((state.reviewFilter = filter), store.set('reviewsAllRepos', true), setTab('reviews'))
@@ -1171,15 +1224,15 @@ async function viewRepos() {
     return h(
       'div',
       { class: 'rov-health rov-mr' },
-      h('div', { class: 'rov-health-head' }, h('span', { class: 'rov-tile-label' }, 'Merge requests'), h('button', { class: 'linkish', onClick: go('todo') }, `${open.filter((it) => forMe(it) || isMine(it)).length} for you →`)),
+      h('div', { class: 'rov-health-head' }, h('span', { class: 'rov-tile-label' }, t('Merge requests')), h('button', { class: 'linkish', onClick: go('todo') }, t('{n} for you →', { n: open.filter((it) => forMe(it) || isMine(it)).length }))),
       h(
         'div',
         { class: 'rov-mr-grid' },
-        row('to review', open.filter(needsMe).length, 'review', 'Waiting for your approval'),
-        row('opened by you', open.filter(isMine).length, 'mine', 'Your open merge requests'),
-        row('approved, not merged', open.filter((it) => it.myApproved && !isMine(it)).length, 'approved', 'You approved them; waiting to be merged'),
-        row('pipeline running', open.filter(ciBusy).length, 'running', 'Their pipeline is still running'),
-        row('with conflicts', open.filter((it) => it.conflicts).length, 'conflict', 'Need their conflicts resolved')
+        row(t('to review'), open.filter(needsMe).length, 'review', t('Waiting for your approval')),
+        row(t('opened by you'), open.filter(isMine).length, 'mine', t('Your open merge requests')),
+        row(t('approved, not merged'), open.filter((it) => it.myApproved && !isMine(it)).length, 'approved', t('You approved them; waiting to be merged')),
+        row(t('pipeline running'), open.filter(ciBusy).length, 'running', t('Their pipeline is still running')),
+        row(t('with conflicts'), open.filter((it) => it.conflicts).length, 'conflict', t('Need their conflicts resolved'))
       )
     )
   }
@@ -1199,7 +1252,7 @@ async function viewRepos() {
     const all = shownRepos()
     const failed = [...rovState.errors.keys()].filter((p) => rovState.data.repos.some((r) => r.path === p)).length
     const cmd = (ic, label, title, fn, cls = '') => h('button', { class: `btn sm ${cls}`, title, onClick: fn }, icon(ic, 12), label)
-    const pick = h('input', { type: 'checkbox', class: 'rov-pick rov-pick-all', title: n ? 'Clear the selection' : 'Select every repository shown', 'aria-label': 'Select all' })
+    const pick = h('input', { type: 'checkbox', class: 'rov-pick rov-pick-all', title: n ? t('Clear the selection') : t('Select every repository shown'), 'aria-label': t('Select all') })
     pick.checked = n > 0 && n >= all.length
     pick.indeterminate = n > 0 && n < all.length
     pick.addEventListener('change', () => (n ? rovState.sel.clear() : all.forEach((r) => rovState.sel.add(r.path)), redrawPage()))
@@ -1207,17 +1260,17 @@ async function viewRepos() {
       pick,
       n
         ? [
-            h('span', { class: 'rov-sel-n' }, `${n} selected`),
-            cmd('fetch', 'Fetch', `Fetch the ${n} selected`, () => fetchAll(), 'rov-fetch-sel'),
-            cmd('pull', 'Pull', 'Pull the selected, where it is safe', () => pullAll(), 'rov-pull-all'),
-            cmd('push', 'Push', 'Push the selected, where it is safe', () => pushAll(), 'rov-push-all'),
-            cmd('tag', 'Tag…', 'Tag the selected, each with its next version', () => tagManyModal(targets(), () => load()), 'rov-tag-btn'),
-            cmd('branch', 'Switch branch…', 'Switch the selected to one branch', () => switchAll(), 'rov-switch-all'),
-            cmd('plus', 'New branch…', 'Create the same branch in the selected', () => newBranchMany(), 'rov-new-branch'),
-            h('button', { class: 'btn sm ghost', title: 'Clear the selection', onClick: () => (rovState.sel.clear(), redrawPage()) }, 'Clear')
+            h('span', { class: 'rov-sel-n' }, t('{n} selected', { n })),
+            cmd('fetch', t('Fetch'), t('Fetch the {n} selected', { n }), () => fetchAll(), 'rov-fetch-sel'),
+            cmd('pull', t('Pull'), t('Pull the selected, where it is safe'), () => pullAll(), 'rov-pull-all'),
+            cmd('push', t('Push'), t('Push the selected, where it is safe'), () => pushAll(), 'rov-push-all'),
+            cmd('tag', t('Tag…'), t('Tag the selected, each with its next version'), () => tagManyModal(targets(), () => load()), 'rov-tag-btn'),
+            cmd('branch', t('Switch branch…'), t('Switch the selected to one branch'), () => switchAll(), 'rov-switch-all'),
+            cmd('plus', t('New branch…'), t('Create the same branch in the selected'), () => newBranchMany(), 'rov-new-branch'),
+            h('button', { class: 'btn sm ghost', title: t('Clear the selection'), onClick: () => (rovState.sel.clear(), redrawPage()) }, t('Clear'))
           ]
-        : [h('span', { class: 'dim rov-sel-hint' }, 'Tick repositories to fetch, pull, push, tag or switch them together'), cmd('fetch', 'Fetch all', 'Fetch every repository shown (4 at a time)', () => fetchAll(), 'rov-fetch-all')],
-      failed ? h('button', { class: `btn sm rov-failed ${filter === 'failed' ? 'on' : ''}`, title: 'Show only the repositories whose last command failed', onClick: () => ((filter = rovState.filter = filter === 'failed' ? '' : 'failed'), draw()) }, icon('alert', 12), `${failed} failed`) : null
+        : [h('span', { class: 'dim rov-sel-hint' }, t('Tick repositories to fetch, pull, push, tag or switch them together')), cmd('fetch', t('Fetch all'), t('Fetch every repository shown (4 at a time)'), () => fetchAll(), 'rov-fetch-all')],
+      failed ? h('button', { class: `btn sm rov-failed ${filter === 'failed' ? 'on' : ''}`, title: t('Show only the repositories whose last command failed'), onClick: () => ((filter = rovState.filter = filter === 'failed' ? '' : 'failed'), draw()) }, icon('alert', 12), t('{n} failed', { n: failed })) : null
     ].flat().filter(Boolean))
   }
   // the dashboard: tiles that filter the list, and one bar of how healthy the repos are
@@ -1230,7 +1283,7 @@ async function viewRepos() {
     const tile = (k, label, value, sub, tone) =>
       h(
         'button',
-        { class: `rov-tile ${tone || ''} ${filter === k ? 'on' : ''}`, 'data-k': k || 'all', title: k ? `Show only these: ${label.toLowerCase()}` : 'Show every repository', onClick: () => setFilter(k) },
+        { class: `rov-tile ${tone || ''} ${filter === k ? 'on' : ''}`, 'data-k': k || 'all', title: k ? t('Show only these: {label}', { label: label.toLowerCase() }) : t('Show every repository'), onClick: () => setFilter(k) },
         h('span', { class: 'rov-tile-label' }, label),
         h('span', { class: 'rov-tile-value' }, String(value)),
         h('span', { class: 'rov-tile-sub dim' }, sub)
@@ -1238,23 +1291,23 @@ async function viewRepos() {
     const tiles = h(
       'div',
       { class: 'rov-tiles' },
-      tile('', 'Repositories', rs.length, branches.size > 1 ? `on ${branches.size} branches` : branches.size ? `all on ${[...branches][0]}` : '-'),
-      tile('attention', 'Need attention', count('attention'), 'conflicts or failed CI', count('attention') ? 'bad' : ''),
-      tile('changes', 'With changes', count('changes'), `${sum('changes')} files changed`, count('changes') ? 'warn' : ''),
-      tile('behind', 'To pull', count('behind'), `${sum('behind')} commits behind`, count('behind') ? 'warn' : ''),
-      tile('ahead', 'To push', count('ahead'), `${sum('ahead')} commits ahead`, count('ahead') ? 'good' : '')
+      tile('', t('Repositories'), rs.length, branches.size > 1 ? t('on {n} branches', { n: branches.size }) : branches.size ? t('all on {branch}', { branch: [...branches][0] }) : '-'),
+      tile('attention', t('Need attention'), count('attention'), t('conflicts or failed CI'), count('attention') ? 'bad' : ''),
+      tile('changes', t('With changes'), count('changes'), t('{n} files changed', { n: sum('changes') }), count('changes') ? 'warn' : ''),
+      tile('behind', t('To pull'), count('behind'), t('{n} commits behind', { n: sum('behind') }), count('behind') ? 'warn' : ''),
+      tile('ahead', t('To push'), count('ahead'), t('{n} commits ahead', { n: sum('ahead') }), count('ahead') ? 'good' : '')
     )
     // health: each repo is clean, has something to do, or needs fixing (named, never colour alone)
     const tone = (r) => (r.error || r.conflicts || r.state || r.ci === 'failed' ? 'bad' : r.behind || r.changes || r.ahead ? 'warn' : 'ok')
     const parts = [
-      ['ok', 'Clean', rs.filter((r) => tone(r) === 'ok')],
-      ['warn', 'Something to do', rs.filter((r) => tone(r) === 'warn')],
-      ['bad', 'Needs fixing', rs.filter((r) => tone(r) === 'bad')]
+      ['ok', t('Clean'), rs.filter((r) => tone(r) === 'ok')],
+      ['warn', t('Something to do'), rs.filter((r) => tone(r) === 'warn')],
+      ['bad', t('Needs fixing'), rs.filter((r) => tone(r) === 'bad')]
     ]
     const health = h(
       'div',
       { class: 'rov-health' },
-      h('div', { class: 'rov-health-head' }, h('span', { class: 'rov-tile-label' }, 'Health'), h('span', { class: 'dim' }, `${parts[0][2].length} of ${rs.length} clean and up to date`)),
+      h('div', { class: 'rov-health-head' }, h('span', { class: 'rov-tile-label' }, t('Health')), h('span', { class: 'dim' }, t('{n} of {total} clean and up to date', { n: parts[0][2].length, total: rs.length }))),
       h(
         'div',
         { class: 'rov-health-bar', role: 'img', 'aria-label': parts.map(([, l, x]) => `${l}: ${x.length}`).join(', ') },
@@ -1262,12 +1315,12 @@ async function viewRepos() {
       ),
       h('div', { class: 'rov-legend' }, ...parts.map(([k, l, x]) => h('span', { class: 'rov-legend-i' }, h('span', { class: `rov-key ${k}` }), `${l} `, h('b', null, String(x.length)))))
     )
-    const search = h('input', { class: 'rov-search', type: 'search', placeholder: 'Filter by name or branch…', value: text })
+    const search = h('input', { class: 'rov-search', type: 'search', placeholder: t('Filter by name or branch…'), value: text })
     search.addEventListener('input', () => ((text = search.value), (rovState.text = text), drawList()))
     const label = ROV_FILTERS.find(([x]) => x === filter)?.[1]
     append(clear(summary), [h('div', { class: 'rov-dash' }, tiles, h('div', { class: 'rov-side' }, health, mrCard()))])
     append(clear(fbar), [
-      h('div', { class: 'rov-filterbar' }, selBarEl, label ? h('button', { class: 'rov-chip on', title: 'Show every repository', onClick: () => setFilter(filter) }, `Only ${label}`, icon('x', 10)) : null, h('span', { class: 'grow' }), search)
+      h('div', { class: 'rov-filterbar' }, selBarEl, label ? h('button', { class: 'rov-chip on', title: t('Show every repository'), onClick: () => setFilter(filter) }, t('Only {label}', { label }), icon('x', 10)) : null, h('span', { class: 'grow' }), search)
     ])
     drawSelBar()
   }
@@ -1277,8 +1330,8 @@ async function viewRepos() {
     body.append(summary, fbar, list)
     body.append(
       data.roots?.length
-        ? h('div', { class: 'rov-foot dim', title: data.roots.join('\n') }, icon('folder', 12), `Also listing the repos inside ${data.roots.map(shortPath).join('; ')}`, ' · ', h('button', { class: 'linkish', onClick: () => scanFolders() }, 'Change'))
-        : h('div', { class: 'rov-foot dim' }, data.servers ? 'Lists the repositories opened in Orca and the ones on your servers. ' : 'Lists the repositories opened in Orca. ', h('button', { class: 'linkish', onClick: () => scanFolders() }, 'Scan a folder'), ' to add the repos inside it too.')
+        ? h('div', { class: 'rov-foot dim', title: data.roots.join('\n') }, icon('folder', 12), t('Also listing the repos inside {folders}', { folders: data.roots.map(shortPath).join('; ') }), ' · ', h('button', { class: 'linkish', onClick: () => scanFolders() }, t('Change')))
+        : h('div', { class: 'rov-foot dim' }, data.servers ? t('Lists the repositories opened in Orca and the ones on your servers. ') : t('Lists the repositories opened in Orca. '), h('button', { class: 'linkish', onClick: () => scanFolders() }, t('Scan a folder')), t(' to add the repos inside it too.')) // i18n: "[Scan a folder] to add the repos inside it too."
     )
     drawList()
   }
@@ -1290,7 +1343,7 @@ async function viewRepos() {
       .filter((r) => words.every((w) => `${r.name} ${r.branch || ''} ${r.path}`.toLowerCase().includes(w)))
       .sort((a, b) => rovScore(b) - rovScore(a) || a.name.localeCompare(b.name))
     clear(list)
-    if (!rows.length) list.append(h('div', { class: 'empty' }, icon('check', 24), h('div', null, data.repos.length ? 'No repository matches' : 'No repositories yet: open some in Orca, or scan a folder')))
+    if (!rows.length) list.append(h('div', { class: 'empty' }, icon('check', 24), h('div', null, data.repos.length ? t('No repository matches') : t('No repositories yet: open some in Orca, or scan a folder'))))
     // one branch column for every row: as wide as the longest name shown (140–320 px), so names show
     // in full when there is room and the columns line up
     const longest = Math.max(4, ...rows.map((r) => (r.branch || `detached ${r.oid || ''}`).length))
@@ -1306,14 +1359,14 @@ async function viewRepos() {
       const groups = new Map()
       for (const r of rows) {
         const k = r.group?.id || ''
-        if (!groups.has(k)) groups.set(k, { name: r.group ? r.group.name || 'Project group' : data.grouped ? 'Not in a project group' : 'On this computer', server: !!r.group?.server, order: r.group ? r.group.order : data.grouped ? 1e9 : -1, rows: [] })
+        if (!groups.has(k)) groups.set(k, { name: r.group ? r.group.name || t('Project group') : data.grouped ? t('Not in a project group') : t('On this computer'), server: !!r.group?.server, order: r.group ? r.group.order : data.grouped ? 1e9 : -1, rows: [] })
         groups.get(k).rows.push(r)
       }
       for (const g of [...groups.values()].sort((a, b) => a.order - b.order)) {
         // inside a group: Orca's own order, as its sidebar lists them
         g.rows.sort((a, b) => (a.group?.repoOrder ?? 1e9) - (b.group?.repoOrder ?? 1e9) || a.name.localeCompare(b.name))
         const need = g.rows.filter((r) => rovScore(r) >= 2).length
-        list.append(h('div', { class: 'rov-grp' }, icon(g.server ? 'server' : 'folder', 12), h('span', { class: 'rov-grp-name' }, g.name), h('span', { class: 'rov-group-n' }, String(g.rows.length)), need ? h('span', { class: 'rov-grp-need' }, `${need} need you`) : null))
+        list.append(h('div', { class: 'rov-grp' }, icon(g.server ? 'server' : 'folder', 12), h('span', { class: 'rov-grp-name' }, g.name), h('span', { class: 'rov-group-n' }, String(g.rows.length)), need ? h('span', { class: 'rov-grp-need' }, t('{n} need you', { n: need })) : null))
         g.rows.forEach(put)
       }
     } else rows.forEach(put)
@@ -1331,12 +1384,12 @@ async function viewRepos() {
     row.classList.toggle('busy', !!doing)
     const failure = rovState.errors.get(r.path)
     row.classList.toggle('failed', !!failure)
-    const pick = h('input', { type: 'checkbox', class: 'rov-pick', 'aria-label': `Select ${r.name}`, checked: rovState.sel.has(r.path), disabled: !!r.error })
+    const pick = h('input', { type: 'checkbox', class: 'rov-pick', 'aria-label': t('Select {name}', { name: r.name }), checked: rovState.sel.has(r.path), disabled: !!r.error })
     pick.addEventListener('change', () => (pick.checked ? rovState.sel.add(r.path) : rovState.sel.delete(r.path), row.classList.toggle('sel', pick.checked), drawSelBar()))
     row.classList.toggle('sel', rovState.sel.has(r.path))
     clear(row).append(
       pick,
-      h('span', { class: `rov-dot ${tone}`, title: tone === 'ok' ? 'Clean and up to date' : tone === 'bad' ? 'Needs fixing' : 'Something to do' }),
+      h('span', { class: `rov-dot ${tone}`, title: tone === 'ok' ? t('Clean and up to date') : tone === 'bad' ? t('Needs fixing') : t('Something to do') }),
       h(
         'div',
         { class: 'rov-name', title: r.path },
@@ -1344,11 +1397,11 @@ async function viewRepos() {
           'div',
           { class: 'rov-title' },
           h('span', { class: 'ellipsis' }, r.name),
-          here && h('span', { class: 'pill' }, 'open here'),
-          r.source === 'scan' && h('span', { class: 'pill', title: 'Found by scanning a folder; not opened in Orca' }, 'scanned')
+          here && h('span', { class: 'pill' }, t('open here')),
+          r.source === 'scan' && h('span', { class: 'pill', title: t('Found by scanning a folder; not opened in Orca') }, t('scanned'))
         ),
         failure
-          ? h('div', { class: 'rov-fail', title: failure.message }, icon('alert', 11), h('span', { class: 'ellipsis' }, `${{ fetch: 'Fetch', pull: 'Pull', push: 'Push', checkout: 'Switch', branchCreate: 'New branch' }[failure.op] || 'Last command'} failed: ${failure.message}`))
+          ? h('div', { class: 'rov-fail', title: failure.message }, icon('alert', 11), h('span', { class: 'ellipsis' }, t('{op} failed: {error}', { op: { fetch: t('Fetch'), pull: t('Pull'), push: t('Push'), checkout: t('Switch'), branchCreate: t('New branch') }[failure.op] || t('Last command'), error: failure.message })))
           : h('div', { class: 'rov-path dim mono ellipsis' }, shortPath(r.host ? r.path.replace(/^ssh:\/\/[^/]+/, '') : r.path))
       ),
       r.error
@@ -1356,28 +1409,28 @@ async function viewRepos() {
         : h(
             'div',
             { class: 'rov-cells' },
-            h('button', { class: 'rov-branch', title: 'Switch branch', disabled: !!doing, onClick: (e) => switchMenu(e.currentTarget, r) }, icon('branch', 11), h('span', { class: 'ellipsis' }, r.branch || `detached ${r.oid}`), icon('down', 10)),
+            h('button', { class: 'rov-branch', title: t('Switch branch'), disabled: !!doing, onClick: (e) => switchMenu(e.currentTarget, r) }, icon('branch', 11), h('span', { class: 'ellipsis' }, r.branch || t('detached {oid}', { oid: r.oid })), icon('down', 10)),
             h(
               'span',
-              { class: 'rov-sync', title: r.upstream ? `Compared with ${r.upstream}` : 'This branch has no upstream' },
+              { class: 'rov-sync', title: r.upstream ? t('Compared with {upstream}', { upstream: r.upstream }) : t('This branch has no upstream') },
               r.ahead ? h('span', { class: 'up' }, `↑${r.ahead}`) : null,
               r.behind ? h('span', { class: 'down' }, `↓${r.behind}`) : null,
-              !r.ahead && !r.behind ? h('span', { class: 'dim' }, r.upstream ? 'up to date' : 'no upstream') : null
+              !r.ahead && !r.behind ? h('span', { class: 'dim' }, r.upstream ? t('up to date') : t('no upstream')) : null
             ),
             h(
               'span',
               { class: `rov-changes ${r.changes ? 'has' : ''}` },
-              r.conflicts ? h('span', { class: 'bad' }, `${r.conflicts} conflict${r.conflicts > 1 ? 's' : ''}`) : r.changes ? `${r.changes} changed` : h('span', { class: 'dim' }, 'clean'),
+              r.conflicts ? h('span', { class: 'bad' }, r.conflicts > 1 ? t('{n} conflicts', { n: r.conflicts }) : t('{n} conflict', { n: r.conflicts })) : r.changes ? t('{n} changed', { n: r.changes }) : h('span', { class: 'dim' }, t('clean')),
               r.state ? h('span', { class: 'pill rv-conflict' }, `${r.state}`) : null
             ),
-            h('span', { class: 'rov-tagcol' }, r.tag ? h('button', { class: 'rov-tag', title: `Latest tag ${r.tag}${r.tagAt ? ` (${ago(r.tagAt)})` : ''}. Click to tag again`, onClick: () => tagManyModal([r], () => load()) }, icon('tag', 10), h('span', { class: 'ellipsis' }, r.tag)) : h('span', { class: 'dim' }, 'no tags')),
-            h('span', { class: 'rov-ci' }, r.ci ? h('button', { class: `ci ci-${r.ci}`, title: r.ciUrl ? 'Open the pipeline' : `CI ${r.ci}`, onClick: () => r.ciUrl && openLink(r.ciUrl) }, ciIcon(r.ci), r.ci) : null),
+            h('span', { class: 'rov-tagcol' }, r.tag ? h('button', { class: 'rov-tag', title: r.tagAt ? t('Latest tag {tag} ({when}). Click to tag again', { tag: r.tag, when: ago(r.tagAt) }) : t('Latest tag {tag}. Click to tag again', { tag: r.tag }), onClick: () => tagManyModal([r], () => load()) }, icon('tag', 10), h('span', { class: 'ellipsis' }, r.tag)) : h('span', { class: 'dim' }, t('no tags'))),
+            h('span', { class: 'rov-ci' }, r.ci ? h('button', { class: `ci ci-${r.ci}`, title: r.ciUrl ? t('Open the pipeline') : t('CI {state}', { state: r.ci }), onClick: () => r.ciUrl && openLink(r.ciUrl) }, ciIcon(r.ci), r.ci) : null),
             h(
               'span',
               { class: 'rov-rv' },
               // its open merge requests, and how many wait for me; a click shows them
               reviews.length
-                ? h('button', { class: `pill ${reviews.some(needsMe) ? 'rv-new' : 'rov-mr-open'}`, title: reviews.map((it) => `${mrRef(it)} ${it.title}`).join('\n'), onClick: () => openRepo(r, 'reviews') }, icon('pr', 10), `${reviews.length} open${reviews.some(needsMe) ? ` · ${reviews.filter(needsMe).length} to review` : ''}`)
+                ? h('button', { class: `pill ${reviews.some(needsMe) ? 'rv-new' : 'rov-mr-open'}`, title: reviews.map((it) => `${mrRef(it)} ${it.title}`).join('\n'), onClick: () => openRepo(r, 'reviews') }, icon('pr', 10), `${t('{n} open', { n: reviews.length })}${reviews.some(needsMe) ? ` · ${t('{n} to review', { n: reviews.filter(needsMe).length })}` : ''}`)
                 : null
             )
           ),
@@ -1387,23 +1440,23 @@ async function viewRepos() {
         doing
           ? h('span', { class: 'rov-doing dim' }, h('span', { class: 'spinner sm' }), doing)
           : [
-              !r.error && iconBtn('fetch', `Fetch ${r.name}`, () => act(r, 'fetch'), { class: 'icon-btn rov-fetch' }),
-              !r.error && iconBtn('tag', `Tag ${r.name}: its next version`, () => tagManyModal([r], () => load()), { class: 'icon-btn rov-tag-one' }),
-              !r.error && r.behind > 0 ? h('button', { class: 'btn sm rov-pull', title: `Pull ${r.behind} commit${r.behind > 1 ? 's' : ''} into ${r.branch}`, onClick: () => act(r, 'pull') }, icon('pull', 12), 'Pull') : null,
-              h('button', { class: 'btn sm primary rov-open', title: `Open ${r.name} in Git Control`, onClick: () => openRepo(r) }, 'Open'),
-              iconBtn('more', `More for ${r.name}`, (e) => rowMenu(e.currentTarget, r), { class: 'icon-btn rov-row-more' })
+              !r.error && iconBtn('fetch', t('Fetch {name}', { name: r.name }), () => act(r, 'fetch'), { class: 'icon-btn rov-fetch' }),
+              !r.error && iconBtn('tag', t('Tag {name}: its next version', { name: r.name }), () => tagManyModal([r], () => load()), { class: 'icon-btn rov-tag-one' }),
+              !r.error && r.behind > 0 ? h('button', { class: 'btn sm rov-pull', title: r.behind > 1 ? t('Pull {n} commits into {branch}', { n: r.behind, branch: r.branch }) : t('Pull {n} commit into {branch}', { n: r.behind, branch: r.branch }), onClick: () => act(r, 'pull') }, icon('pull', 12), t('Pull')) : null,
+              h('button', { class: 'btn sm primary rov-open', title: t('Open {name} in Git Control', { name: r.name }), onClick: () => openRepo(r) }, t('Open')),
+              iconBtn('more', t('More for {name}', { name: r.name }), (e) => rowMenu(e.currentTarget, r), { class: 'icon-btn rov-row-more' })
             ]
       )
     )
   }
   function rowMenu(anchor, r) {
     menu(anchor, [
-      { label: 'Merge requests', icon: 'pr', onClick: () => openRepo(r, 'reviews') },
-      { label: 'Pipelines', icon: 'pipeline', onClick: () => openRepo(r, 'pipelines') },
-      { label: 'Commit tab', icon: 'commit', onClick: () => openRepo(r, 'changes') },
+      { label: t('Merge requests'), icon: 'pr', onClick: () => openRepo(r, 'reviews') },
+      { label: t('Pipelines'), icon: 'pipeline', onClick: () => openRepo(r, 'pipelines') },
+      { label: t('Commit tab'), icon: 'commit', onClick: () => openRepo(r, 'changes') },
       '-',
-      !r.error && r.ahead > 0 ? { label: `Push ${r.ahead} commit${r.ahead > 1 ? 's' : ''}`, icon: 'push', onClick: () => act(r, 'push') } : null,
-      { label: 'Copy path', icon: 'copy', onClick: () => navigator.clipboard?.writeText(r.path).then(() => toast('Path copied'), () => toast(r.path)) }
+      !r.error && r.ahead > 0 ? { label: r.ahead > 1 ? t('Push {n} commits', { n: r.ahead }) : t('Push {n} commit', { n: r.ahead }), icon: 'push', onClick: () => act(r, 'push') } : null,
+      { label: t('Copy path'), icon: 'copy', onClick: () => navigator.clipboard?.writeText(r.path).then(() => toast(t('Path copied')), () => toast(r.path)) }
     ].filter(Boolean))
   }
   // the branches of every repo: name → { local: [repo…], remote: [repo…] }
@@ -1428,19 +1481,19 @@ async function viewRepos() {
   }
   async function switchAll() {
     const rs = targets()
-    toast('Reading the branches of every repo…')
+    toast(t('Reading the branches of every repo…'))
     const map = await branchMap(rs)
     // branches found in two repos or more first: those are the ones worth switching together
     const names = [...map.entries()]
       .map(([n, v]) => [n, new Set([...v.local, ...v.remote]).size])
       .filter(([, c]) => c > 0)
       .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-    if (!names.length) return toast('No branches found')
+    if (!names.length) return toast(t('No branches found'))
     const res = await dialog({
-      title: 'Switch all to a branch',
-      message: 'Every repo that has this branch (here or on origin) switches to it. The others stay where they are.',
-      fields: [{ key: 'name', label: 'Branch', type: 'select', value: names[0][0], options: names.slice(0, 200).map(([n, c]) => [n, `${n}  (${c} repo${c > 1 ? 's' : ''})`]) }],
-      ok: 'Next',
+      title: t('Switch all to a branch'),
+      message: t('Every repo that has this branch (here or on origin) switches to it. The others stay where they are.'),
+      fields: [{ key: 'name', label: t('Branch'), type: 'select', value: names[0][0], options: names.slice(0, 200).map(([n, c]) => [n, c > 1 ? t('{branch}  ({n} repos)', { branch: n, n: c }) : t('{branch}  ({n} repo)', { branch: n, n: c })]) }],
+      ok: t('Next'),
       stack: true
     })
     if (!res?.name) return
@@ -1449,51 +1502,51 @@ async function viewRepos() {
     const on = rs.filter((r) => r.branch === name)
     const go = rs.filter((r) => r.branch !== name && (v.local.has(r.path) || v.remote.has(r.path)))
     const none = rs.filter((r) => !v.local.has(r.path) && !v.remote.has(r.path))
-    if (!go.length) return toast(on.length ? `Every repo that has ${name} is already on it` : `No repo has ${name}`)
+    if (!go.length) return toast(on.length ? t('Every repo that has {branch} is already on it', { branch: name }) : t('No repo has {branch}', { branch: name }))
     const msg = [
-      `Switch to ${name}:\n${go.map((r) => `  • ${r.name} (from ${r.branch || 'detached'}${v.local.has(r.path) ? '' : ', new from origin'})${r.changes ? ` · ${r.changes} uncommitted change${r.changes > 1 ? 's' : ''} kept when they do not clash` : ''}`).join('\n')}`,
-      on.length ? `\nAlready on it: ${on.map((r) => r.name).join(', ')}` : '',
-      none.length ? `\nNo such branch, left as they are: ${none.map((r) => r.name).join(', ')}` : ''
+      `${t('Switch to {branch}:', { branch: name })}\n${go.map((r) => `  • ${r.name} (${v.local.has(r.path) ? t('from {branch}', { branch: r.branch || t('detached') }) : t('from {branch}, new from origin', { branch: r.branch || t('detached') })})${r.changes ? ` · ${r.changes > 1 ? t('{n} uncommitted changes kept when they do not clash', { n: r.changes }) : t('{n} uncommitted change kept when they do not clash', { n: r.changes })}` : ''}`).join('\n')}`,
+      on.length ? `\n${t('Already on it: {repos}', { repos: on.map((r) => r.name).join(', ') })}` : '',
+      none.length ? `\n${t('No such branch, left as they are: {repos}', { repos: none.map((r) => r.name).join(', ') })}` : ''
     ].join('\n')
-    if (!(await confirmBox(`Switch ${plural(go.length)} to ${name}?`, msg, 'Switch'))) return
+    if (!(await confirmBox(t('Switch {repos} to {branch}?', { repos: plural(go.length), branch: name }), msg, t('Switch')))) return
     const errs = await runEach(go, (r) => act(r, 'checkout', v.local.has(r.path) ? { ref: name } : { ref: `origin/${name}`, track: true }, true))
-    errs.length ? toast(`Switched ${go.length - errs.length} of ${go.length}\n${errs.join('\n')}`, 'error') : toast(`${plural(go.length)} now on ${name}`)
+    errs.length ? toast(`${t('Switched {n} of {total}', { n: go.length - errs.length, total: go.length })}\n${errs.join('\n')}`, 'error') : toast(t('{repos} now on {branch}', { repos: plural(go.length), branch: name }))
   }
   async function newBranchMany() {
     const rs = targets()
     const shown = new Set([...list.children].map((x) => x.dataset?.path).filter(Boolean))
     const res = await dialog({
-      title: 'New branch in several repos',
-      message: 'Creates the branch from the commit each repo is on now.',
+      title: t('New branch in several repos'),
+      message: t('Creates the branch from the commit each repo is on now.'),
       fields: [
-        { key: 'name', label: 'Branch name', value: '', placeholder: 'feature/new-thing' },
-        { key: 'checkout', label: 'Switch to it', type: 'check', value: true },
-        ...rs.map((r, i) => ({ key: `r${i}`, label: `${r.name}  (on ${r.branch || 'detached'})`, type: 'check', value: shown.has(r.path) }))
+        { key: 'name', label: t('Branch name'), value: '', placeholder: 'feature/new-thing' },
+        { key: 'checkout', label: t('Switch to it'), type: 'check', value: true },
+        ...rs.map((r, i) => ({ key: `r${i}`, label: t('{name}  (on {branch})', { name: r.name, branch: r.branch || t('detached') }), type: 'check', value: shown.has(r.path) }))
       ],
-      ok: 'Create',
+      ok: t('Create'),
       stack: true
     })
     const name = res?.name?.trim()
     if (!name) return
     const pick = rs.filter((r, i) => res[`r${i}`])
-    if (!pick.length) return toast('No repo picked')
+    if (!pick.length) return toast(t('No repo picked'))
     const errs = await runEach(pick, (r) => act(r, 'branchCreate', { name, checkout: !!res.checkout }, true))
-    errs.length ? toast(`Created ${name} in ${pick.length - errs.length} of ${pick.length}\n${errs.join('\n')}`, 'error') : toast(`Created ${name} in ${plural(pick.length)}`)
+    errs.length ? toast(`${t('Created {branch} in {n} of {total}', { branch: name, n: pick.length - errs.length, total: pick.length })}\n${errs.join('\n')}`, 'error') : toast(t('Created {branch} in {repos}', { branch: name, repos: plural(pick.length) }))
   }
   async function pushAll() {
     const ahead = targets().filter((r) => r.ahead > 0)
-    if (!ahead.length) return toast('Nothing to push: no repository has commits waiting')
-    const why = (r) => (r.behind ? `gone its own way: ${r.behind} commit${r.behind > 1 ? 's' : ''} to pull first` : r.state || r.conflicts ? 'a merge or rebase is in progress' : !r.branch ? 'not on a branch' : '')
+    if (!ahead.length) return toast(t('Nothing to push: no repository has commits waiting'))
+    const why = (r) => (r.behind ? (r.behind > 1 ? t('gone its own way: {n} commits to pull first', { n: r.behind }) : t('gone its own way: {n} commit to pull first', { n: r.behind })) : r.state || r.conflicts ? t('a merge or rebase is in progress') : !r.branch ? t('not on a branch') : '')
     const safe = ahead.filter((r) => !why(r))
     const skip = ahead.filter((r) => why(r))
     const msg = [
-      safe.length ? `Push:\n${safe.map((r) => `  • ${r.name} (${r.branch}) ↑${r.ahead}`).join('\n')}` : 'No repository can be pushed safely.',
-      skip.length ? `\nSkipped (open them to sort it out):\n${skip.map((r) => `  • ${r.name}: ${why(r)}`).join('\n')}` : ''
+      safe.length ? `${t('Push:')}\n${safe.map((r) => `  • ${r.name} (${r.branch}) ↑${r.ahead}`).join('\n')}` : t('No repository can be pushed safely.'),
+      skip.length ? `\n${t('Skipped (open them to sort it out):')}\n${skip.map((r) => `  • ${r.name}: ${why(r)}`).join('\n')}` : ''
     ].join('\n')
-    if (!safe.length) return confirmBox('Push all', msg, 'OK')
-    if (!(await confirmBox(`Push ${plural(safe.length)}?`, msg, 'Push'))) return
+    if (!safe.length) return confirmBox(t('Push all'), msg, t('OK'))
+    if (!(await confirmBox(t('Push {repos}?', { repos: plural(safe.length) }), msg, t('Push')))) return
     const errs = await runMany(safe, 'push')
-    errs.length ? toast(`Pushed ${safe.length - errs.length} of ${safe.length}\n${errs.join('\n')}`, 'error') : toast(`Pushed ${plural(safe.length)}`)
+    errs.length ? toast(`${t('Pushed {n} of {total}', { n: safe.length - errs.length, total: safe.length })}\n${errs.join('\n')}`, 'error') : toast(t('Pushed {repos}', { repos: plural(safe.length) }))
   }
   async function runEach(rs, fn) {
     let i = 0
@@ -1510,7 +1563,7 @@ async function viewRepos() {
     return errs
   }
   async function act(r, op, args = {}, quiet = false) {
-    busy.set(r.path, { fetch: 'Fetching…', pull: 'Pulling…', push: 'Pushing…', checkout: 'Switching…', branchCreate: 'Creating…' }[op])
+    busy.set(r.path, { fetch: t('Fetching…'), pull: t('Pulling…'), push: t('Pushing…'), checkout: t('Switching…'), branchCreate: t('Creating…') }[op])
     paintRow(r)
     let err = null
     try {
@@ -1527,7 +1580,7 @@ async function viewRepos() {
     paintRow(r)
     drawSummary()
     drawSelBar()
-    if (!quiet) err ? toast(`${r.name}: ${err}`, 'error') : toast(`${r.name}: ${{ fetch: 'fetched', pull: 'pulled', push: 'pushed', branchCreate: `created ${args.name}`, checkout: `now on ${r.branch}` }[op]}`)
+    if (!quiet) err ? toast(`${r.name}: ${err}`, 'error') : toast(`${r.name}: ${{ fetch: t('fetched'), pull: t('pulled'), push: t('pushed'), branchCreate: t('created {branch}', { branch: args.name }), checkout: t('now on {branch}', { branch: r.branch }) }[op]}`)
     return err
   }
   async function runMany(rs, op) {
@@ -1544,27 +1597,27 @@ async function viewRepos() {
     )
     return errs
   }
-  const plural = (n) => `${n} repositor${n === 1 ? 'y' : 'ies'}`
+  const plural = (n) => (n === 1 ? t('{n} repository', { n }) : t('{n} repositories', { n }))
   async function fetchAll() {
     const rs = targets().filter((r) => !busy.has(r.path))
     const errs = await runMany(rs, 'fetch')
-    errs.length ? toast(`Fetched ${rs.length - errs.length} of ${rs.length}\n${errs.join('\n')}`, 'error') : toast(`Fetched ${plural(rs.length)}`)
+    errs.length ? toast(`${t('Fetched {n} of {total}', { n: rs.length - errs.length, total: rs.length })}\n${errs.join('\n')}`, 'error') : toast(t('Fetched {repos}', { repos: plural(rs.length) }))
   }
   async function pullAll() {
     const behind = targets().filter((r) => r.behind > 0)
-    if (!behind.length) return toast('Nothing to pull: no repository is behind (Fetch all first to check)')
+    if (!behind.length) return toast(t('Nothing to pull: no repository is behind (Fetch all first to check)'))
     const why = (r) =>
-      r.conflicts || r.state ? 'a merge or rebase is in progress' : r.changes ? `${r.changes} uncommitted change${r.changes > 1 ? 's' : ''}` : r.ahead ? `gone its own way: ${r.ahead} local commit${r.ahead > 1 ? 's' : ''} not pushed` : !r.branch ? 'not on a branch' : ''
+      r.conflicts || r.state ? t('a merge or rebase is in progress') : r.changes ? (r.changes > 1 ? t('{n} uncommitted changes', { n: r.changes }) : t('{n} uncommitted change', { n: r.changes })) : r.ahead ? (r.ahead > 1 ? t('gone its own way: {n} local commits not pushed', { n: r.ahead }) : t('gone its own way: {n} local commit not pushed', { n: r.ahead })) : !r.branch ? t('not on a branch') : ''
     const safe = behind.filter((r) => !why(r))
     const skip = behind.filter((r) => why(r))
     const msg = [
-      safe.length ? `Pull, fast-forward only:\n${safe.map((r) => `  • ${r.name} (${r.branch}) ↓${r.behind}`).join('\n')}` : 'No repository can be pulled safely.',
-      skip.length ? `\nSkipped (open them to pull by hand):\n${skip.map((r) => `  • ${r.name}: ${why(r)}`).join('\n')}` : ''
+      safe.length ? `${t('Pull, fast-forward only:')}\n${safe.map((r) => `  • ${r.name} (${r.branch}) ↓${r.behind}`).join('\n')}` : t('No repository can be pulled safely.'),
+      skip.length ? `\n${t('Skipped (open them to pull by hand):')}\n${skip.map((r) => `  • ${r.name}: ${why(r)}`).join('\n')}` : ''
     ].join('\n')
-    if (!safe.length) return confirmBox('Pull all', msg, 'OK')
-    if (!(await confirmBox(`Pull ${plural(safe.length)}?`, msg, 'Pull'))) return
+    if (!safe.length) return confirmBox(t('Pull all'), msg, t('OK'))
+    if (!(await confirmBox(t('Pull {repos}?', { repos: plural(safe.length) }), msg, t('Pull')))) return
     const errs = await runMany(safe, 'pull')
-    errs.length ? toast(`Pulled ${safe.length - errs.length} of ${safe.length}\n${errs.join('\n')}`, 'error') : toast(`Pulled ${plural(safe.length)}`)
+    errs.length ? toast(`${t('Pulled {n} of {total}', { n: safe.length - errs.length, total: safe.length })}\n${errs.join('\n')}`, 'error') : toast(t('Pulled {repos}', { repos: plural(safe.length) }))
   }
   async function switchMenu(anchor, r) {
     let refs
@@ -1577,16 +1630,16 @@ async function viewRepos() {
     menu(
       anchor,
       [
-        { header: `Switch ${r.name} to` },
+        { header: t('Switch {name} to', { name: r.name }) },
         ...locals.map((b) => ({ label: b.name, icon: 'branch', hint: b.behind ? `↓${b.behind}` : '', onClick: () => doSwitch(r, b.name) })),
-        !locals.length && { label: 'No other local branch', disabled: true },
+        !locals.length && { label: t('No other local branch'), disabled: true },
         '-',
-        { label: 'Open in Git Control (remote branches, new branch)', icon: 'open', onClick: () => openRepo(r) }
+        { label: t('Open in Git Control (remote branches, new branch)'), icon: 'open', onClick: () => openRepo(r) }
       ].filter(Boolean)
     )
   }
   async function doSwitch(r, name) {
-    if (r.changes && !(await confirmBox(`Switch ${r.name} to ${name}?`, `${r.name} has ${r.changes} uncommitted change${r.changes > 1 ? 's' : ''}. Git keeps them when they do not clash with ${name}; otherwise it stops and changes nothing.`, 'Switch'))) return
+    if (r.changes && !(await confirmBox(t('Switch {name} to {branch}?', { name: r.name, branch: name }), r.changes > 1 ? t('{name} has {n} uncommitted changes. Git keeps them when they do not clash with {branch}; otherwise it stops and changes nothing.', { name: r.name, n: r.changes, branch: name }) : t('{name} has {n} uncommitted change. Git keeps them when they do not clash with {branch}; otherwise it stops and changes nothing.', { name: r.name, n: r.changes, branch: name }), t('Switch')))) return
     act(r, 'checkout', { ref: name })
   }
   /** Open that repo in Git Control, on a tab (its merge requests, pipelines…) when asked. */
@@ -1597,10 +1650,10 @@ async function viewRepos() {
   }
   async function scanFolders() {
     const res = await dialog({
-      title: 'Scan folders for repos',
-      message: 'Repos overview also lists the Git repositories inside these folders (up to two levels deep), for repos not opened in Orca. Separate folders with ;',
-      fields: [{ key: 'folders', label: 'Folders', value: (data?.roots || []).join('; '), placeholder: 'C:\\work\\project' }],
-      ok: 'Save',
+      title: t('Scan folders for repos'),
+      message: t('Repos overview also lists the Git repositories inside these folders (up to two levels deep), for repos not opened in Orca. Separate folders with ;'),
+      fields: [{ key: 'folders', label: t('Folders'), value: (data?.roots || []).join('; '), placeholder: 'C:\\work\\project' }],
+      ok: t('Save'),
       stack: true
     })
     if (!res) return
@@ -1637,12 +1690,12 @@ async function loadServerRepos({ refresh = false } = {}) {
 function serversHint() {
   const shown = state.servers.filter((x) => !x.hidden)
   const bad = shown.filter((x) => x.error).length
-  return bad ? `${bad} unreachable` : shown.length ? `${shown.length}` : ''
+  return bad ? t('{n} unreachable', { n: bad }) : shown.length ? `${shown.length}` : ''
 }
 function openServers() {
-  openSheet('Servers', h('div', { class: 'servers-sheet' }), [
-    h('button', { class: 'btn sm', title: 'Look for projects on every server again', onClick: async () => (await loadServerRepos({ refresh: true }), renderServers()) }, icon('refresh', 13), h('span', null, 'Rescan')),
-    h('button', { class: 'btn sm primary', onClick: addServer }, icon('plus', 13), h('span', null, 'Add server'))
+  openSheet(t('Servers'), h('div', { class: 'servers-sheet' }), [
+    h('button', { class: 'btn sm', title: t('Look for projects on every server again'), onClick: async () => (await loadServerRepos({ refresh: true }), renderServers()) }, icon('refresh', 13), h('span', null, t('Rescan'))),
+    h('button', { class: 'btn sm primary', onClick: addServer }, icon('plus', 13), h('span', null, t('Add server')))
   ])
   renderServers()
   loadServerRepos().then(renderServers)
@@ -1650,19 +1703,19 @@ function openServers() {
 function renderServers() {
   const root = document.querySelector('.servers-sheet')
   if (!root) return
-  const intro = h('p', { class: 'servers-intro' }, 'Projects on these servers show up in the repository menu.')
+  const intro = h('p', { class: 'servers-intro' }, t('Projects on these servers show up in the repository menu.'))
   if (!state.servers.length)
-    return clear(root).append(intro, h('div', { class: 'empty' }, icon('server', 28), h('div', null, 'No servers yet'), h('div', { class: 'empty-actions' }, h('button', { class: 'btn primary', onClick: addServer }, icon('plus', 13), h('span', null, 'Add server')))))
+    return clear(root).append(intro, h('div', { class: 'empty' }, icon('server', 28), h('div', null, t('No servers yet')), h('div', { class: 'empty-actions' }, h('button', { class: 'btn primary', onClick: addServer }, icon('plus', 13), h('span', null, t('Add server'))))))
   const row = (x) => {
     const status = x.scanning
-      ? h('span', { class: 'pill' }, 'Searching…')
+      ? h('span', { class: 'pill' }, t('Searching…'))
       : x.error
-        ? h('span', { class: 'pill server-bad' }, 'Can’t connect')
+        ? h('span', { class: 'pill server-bad' }, t('Can’t connect'))
         : x.hidden
-          ? h('span', { class: 'pill' }, 'Hidden')
+          ? h('span', { class: 'pill' }, t('Hidden'))
           : x.repoCount != null
-            ? h('span', { class: 'pill on' }, `${x.repoCount} project${x.repoCount === 1 ? '' : 's'}`)
-            : h('span', { class: 'pill' }, 'Not searched')
+            ? h('span', { class: 'pill on' }, x.repoCount === 1 ? t('{n} project', { n: x.repoCount }) : t('{n} projects', { n: x.repoCount }))
+            : h('span', { class: 'pill' }, t('Not searched'))
     const rescan = async () => {
       await request('servers.update', { id: x.id, roots: x.roots })
       await loadServerRepos({ refresh: true })
@@ -1670,10 +1723,10 @@ function renderServers() {
     }
     const more = (anchor) =>
       menu(anchor, [
-        { label: 'Search again', icon: 'refresh', onClick: rescan },
-        { label: 'Folders to search…', icon: 'folder', hint: x.roots.join('; '), onClick: () => editServerRoots(x) },
+        { label: t('Search again'), icon: 'refresh', onClick: rescan },
+        { label: t('Folders to search…'), icon: 'folder', hint: x.roots.join('; '), onClick: () => editServerRoots(x) },
         {
-          label: x.hidden ? 'Show in the menu' : 'Hide from the menu',
+          label: x.hidden ? t('Show in the menu') : t('Hide from the menu'),
           icon: x.hidden ? 'eye' : 'eyeOff',
           onClick: async () => {
             state.servers = await request('servers.update', { id: x.id, hidden: !x.hidden })
@@ -1684,11 +1737,11 @@ function renderServers() {
         x.source === 'manual' ? '-' : null,
         x.source === 'manual'
           ? {
-              label: 'Remove',
+              label: t('Remove'),
               icon: 'trash',
               danger: true,
               onClick: async () => {
-                if (!(await confirmBox(`Remove ${x.label}?`, 'Its projects leave the repository menu. Nothing on the server changes.', 'Remove', true))) return
+                if (!(await confirmBox(t('Remove {name}?', { name: x.label }), t('Its projects leave the repository menu. Nothing on the server changes.'), t('Remove'), true))) return
                 state.servers = await request('servers.remove', { id: x.id })
                 await loadServerRepos()
                 renderServers()
@@ -1699,11 +1752,11 @@ function renderServers() {
     const fix =
       x.error &&
       !x.scanning &&
-      h('div', { class: 'server-error' }, h('div', { class: 'server-error-text' }, x.error), h('div', { class: 'row server-error-actions' }, h('button', { class: 'btn sm', onClick: rescan }, icon('refresh', 13), h('span', null, 'Try again'))))
+      h('div', { class: 'server-error' }, h('div', { class: 'server-error-text' }, x.error), h('div', { class: 'row server-error-actions' }, h('button', { class: 'btn sm', onClick: rescan }, icon('refresh', 13), h('span', null, t('Try again')))))
     return h(
       'div',
-      { class: `server-row${x.hidden ? ' hidden-server' : ''}`, title: x.orcaName ? `${x.label} (in Orca: ${x.orcaName})` : x.label },
-      h('div', { class: 'row' }, icon('server', 16), h('div', { class: 'grow server-name' }, x.label), status, iconBtn('more', `More for ${x.label}`, (e) => more(e.currentTarget), { class: 'icon-btn server-more' })),
+      { class: `server-row${x.hidden ? ' hidden-server' : ''}`, title: x.orcaName ? t('{name} (in Orca: {orca})', { name: x.label, orca: x.orcaName }) : x.label },
+      h('div', { class: 'row' }, icon('server', 16), h('div', { class: 'grow server-name' }, x.label), status, iconBtn('more', t('More for {name}', { name: x.label }), (e) => more(e.currentTarget), { class: 'icon-btn server-more' })),
       fix
     )
   }
@@ -1712,19 +1765,19 @@ function renderServers() {
 async function addServer() {
   const aliases = await request('servers.sshAliases', {}).catch(() => [])
   const r = await dialog({
-    title: 'Add a server',
-    message: 'Its Git projects will show up in the repository menu.',
+    title: t('Add a server'),
+    message: t('Its Git projects will show up in the repository menu.'),
     stack: true,
-    fields: [{ key: 'dest', label: 'Server', placeholder: 'my-server', suggestions: aliases.map((a) => ({ value: a.name, detail: a.detail, disabled: a.added, badge: a.added ? 'Added' : '' })) }],
-    ok: 'Add'
+    fields: [{ key: 'dest', label: t('Server'), placeholder: 'my-server', suggestions: aliases.map((a) => ({ value: a.name, detail: a.detail, disabled: a.added, badge: a.added ? t('Added') : '' })) }],
+    ok: t('Add')
   })
   if (!r?.dest?.trim()) return
-  toast(`Connecting to ${r.dest.trim()}…`)
+  toast(t('Connecting to {server}…', { server: r.dest.trim() }))
   try {
     const res = await request('servers.add', { dest: r.dest.trim() }, 90_000)
-    toast(res.error ? `Added ${res.id}, but searching it failed: ${res.error}` : `${res.repoCount} project${res.repoCount === 1 ? '' : 's'} found on ${res.id}`, res.error ? 'error' : 'ok')
+    toast(res.error ? t('Added {server}, but searching it failed: {error}', { server: res.id, error: res.error }) : res.repoCount === 1 ? t('{n} project found on {server}', { n: res.repoCount, server: res.id }) : t('{n} projects found on {server}', { n: res.repoCount, server: res.id }), res.error ? 'error' : 'ok')
   } catch (e) {
-    await dialog({ title: 'Could not add the server', message: e.message, cancel: null, stack: true })
+    await dialog({ title: t('Could not add the server'), message: e.message, cancel: null, stack: true })
     return
   }
   await loadServerRepos()
@@ -1732,10 +1785,10 @@ async function addServer() {
 }
 async function editServerRoots(x) {
   const r = await dialog({
-    title: `Folders to search on ${x.label}`,
+    title: t('Folders to search on {server}', { server: x.label }),
     stack: true,
-    fields: [{ key: 'roots', label: 'Folders', value: x.roots.join('; '), hint: 'Separate folders with ; (~ is your home folder there). Searched 4 levels deep.' }],
-    ok: 'Search'
+    fields: [{ key: 'roots', label: t('Folders'), value: x.roots.join('; '), hint: t('Separate folders with ; (~ is your home folder there). Searched 4 levels deep.') }],
+    ok: t('Search')
   })
   if (!r) return
   try {
@@ -1756,7 +1809,7 @@ function renderHostBadge() {
   el.hidden = !where
   if (!where) return clear(el)
   clear(el).append(icon('server', 12), h('span', null, where))
-  el.title = `On ${where}: git runs on that server`
+  el.title = t('On {server}: git runs on that server', { server: where })
 }
 
 function pinRepo(p) {
@@ -1778,9 +1831,9 @@ function renderHeader() {
   const st = state.status
   // on a server: its icon, so it is clear that actions run on another machine
   clear($('#repoIcon')).append(icon(hostOf(state.repo) ? 'server' : state.pinned ? 'folder' : 'worktree', 14))
-  $('#repoName').textContent = state.repo ? (state.folder ? `${basename(state.folder.path)} › ` : '') + basename(st?.toplevel || state.repo) : 'No repository'
+  $('#repoName').textContent = state.repo ? (state.folder ? `${basename(state.folder.path)} › ` : '') + basename(st?.toplevel || state.repo) : t('No repository')
   renderHostBadge()
-  $('#repoBtn').title = state.repo || 'Choose a repository'
+  $('#repoBtn').title = state.repo || t('Choose a repository')
   clear($('#repoCaret')).append(icon('down', 12))
   const side = $('#sideToggle')
   if (side && !side.querySelector('svg')) clear(side).append(icon('menu', 16))
@@ -1794,8 +1847,8 @@ function renderHeader() {
   const diverged = st?.ahead > 0 && st?.behind > 0
   const counted = (b, n, title) => {
     if (n > 0) {
-      const up = b.title === 'Push'
-      b.append(h('span', { class: `tb-count ${up ? 'ab-up' : 'ab-down'}`, title: diverged ? `${title}. The branch and its remote have gone separate ways: pull before pushing` : title }, h('span', { class: 'tb-arrow' }, up ? '↑' : '↓'), String(n)))
+      const up = b.title === t('Push')
+      b.append(h('span', { class: `tb-count ${up ? 'ab-up' : 'ab-down'}`, title: diverged ? t('{title}. The branch and its remote have gone separate ways: pull before pushing', { title }) : title }, h('span', { class: 'tb-arrow' }, up ? '↑' : '↓'), String(n)))
       b.classList.add('tb-hot')
       if (diverged) b.classList.add('diverged')
     }
@@ -1804,19 +1857,20 @@ function renderHeader() {
   const st0 = st || {}
   const sep = () => IN_TAB && h('span', { class: 'tb-sep' })
   append(tb, [
-    lbl(iconBtn('fetch', 'Fetch all (prune)', () => run('fetch', {}, { success: 'Fetched' }), { disabled: dis }), 'Fetch'),
-    counted(lbl(iconBtn('pull', 'Pull', (e) => pullMenu(e.currentTarget), { disabled: dis }), 'Pull'), st0.behind, `Pull: ${st0.behind} commit${st0.behind > 1 ? 's' : ''} on ${st0.upstream || 'the remote'}`),
-    counted(lbl(iconBtn('push', 'Push', (e) => pushMenu(e.currentTarget), { disabled: dis }), 'Push'), st0.ahead, `Push: ${st0.ahead} commit${st0.ahead > 1 ? 's' : ''} not on ${st0.upstream || 'the remote'} yet`),
+    lbl(iconBtn('fetch', t('Fetch all (prune)'), () => run('fetch', {}, { success: t('Fetched') }), { disabled: dis }), t('Fetch')),
+    counted(lbl(iconBtn('pull', t('Pull'), (e) => pullMenu(e.currentTarget), { disabled: dis }), t('Pull')), st0.behind, st0.behind > 1 ? t('Pull: {n} commits on {upstream}', { n: st0.behind, upstream: st0.upstream || t('the remote') }) : t('Pull: {n} commit on {upstream}', { n: st0.behind, upstream: st0.upstream || t('the remote') })),
+    counted(lbl(iconBtn('push', t('Push'), (e) => pushMenu(e.currentTarget), { disabled: dis }), t('Push')), st0.ahead, st0.ahead > 1 ? t('Push: {n} commits not on {upstream} yet', { n: st0.ahead, upstream: st0.upstream || t('the remote') }) : t('Push: {n} commit not on {upstream} yet', { n: st0.ahead, upstream: st0.upstream || t('the remote') })),
     sep(),
-    IN_TAB && lbl(iconBtn('stash', 'Stash changes', () => run('stashSave', { untracked: true }, { success: 'Stashed' }), { disabled: dis || !st0.files?.length }), 'Stash'),
+    IN_TAB && lbl(iconBtn('stash', t('Stash changes'), () => run('stashSave', { untracked: true }, { success: t('Stashed') }), { disabled: dis || !st0.files?.length }), t('Stash')),
     sep(),
-    phoneLbl(iconBtn('refresh', 'Refresh', () => manualRefresh(), { disabled: !state.repo }), 'Refresh'),
-    phoneLbl(iconBtn('undo', 'Undo the last action (commit, reset, merge, rebase…)', undoLast, { disabled: dis }), 'Undo'),
-    IN_TAB && phoneLbl(iconBtn('search', 'Commands (Ctrl+.)', () => commandPalette(), { disabled: dis }), 'Actions'),
-    phoneLbl(iconBtn('settings', 'Git settings (identity, HTTPS, remotes)', () => setTab('settings'), { disabled: !state.repo }), 'Settings'),
-    !IN_TAB && iconBtn('expand', 'Open Git Control in a full tab', openTab, { disabled: dis })
+    phoneLbl(iconBtn('refresh', t('Refresh'), () => manualRefresh(), { disabled: !state.repo }), t('Refresh')),
+    phoneLbl(iconBtn('undo', t('Undo the last action (commit, reset, merge, rebase…)'), undoLast, { disabled: dis }), t('Undo')),
+    IN_TAB && phoneLbl(iconBtn('search', t('Commands (Ctrl+.)'), () => commandPalette(), { disabled: dis }), t('Actions')),
+    phoneLbl(iconBtn('settings', t('Git settings (identity, HTTPS, remotes)'), () => setTab('settings'), { disabled: !state.repo }), t('Settings')),
+    !IN_TAB && iconBtn('expand', t('Open Git Control in a full tab'), openTab, { disabled: dis }),
+    langPicker()
   ])
-  const ops = { 'Fetch all (prune)': 'fetch', Pull: 'pull', Push: 'push', 'Stash changes': 'stash', Refresh: 'refresh', 'Undo the last action (commit, reset, merge, rebase…)': 'undo' }
+  const ops = { [t('Fetch all (prune)')]: 'fetch', [t('Pull')]: 'pull', [t('Push')]: 'push', [t('Stash changes')]: 'stash', [t('Refresh')]: 'refresh', [t('Undo the last action (commit, reset, merge, rebase…)')]: 'undo' }
   for (const b of tb.querySelectorAll('button')) if (ops[b.title]) b.dataset.op = ops[b.title]
   paintWorking()
 
@@ -1825,15 +1879,15 @@ function renderHeader() {
   append(bl, [
     h(
       'button',
-      { class: 'branch-chip', title: 'Switch branch', onClick: (e) => quickSwitch(e.currentTarget) },
+      { class: 'branch-chip', title: t('Switch branch'), onClick: (e) => quickSwitch(e.currentTarget) },
       icon('branch', 12),
-      h('span', { class: 'ellipsis' }, st.branch || `detached @ ${(st.oid || '').slice(0, 7)}`),
+      h('span', { class: 'ellipsis' }, st.branch || t('detached @ {sha}', { sha: (st.oid || '').slice(0, 7) })),
       icon('down', 11)
     ),
     // every repository at once: its own page (the button shows it is open; pressed again, back)
-    h('button', { class: `rov-nav-btn ${state.tab === 'repos' ? 'on' : ''}`, title: 'Repo Overview: every repository, its changes, pipelines and merge requests', onClick: () => (state.tab === 'repos' ? setTab(store.get('lastTabBeforeRepos', 'history')) : reposOverview()) }, icon('grid', 12), h('span', { class: 'rov-nav-t' }, 'Repo Overview')),
+    h('button', { class: `rov-nav-btn ${state.tab === 'repos' ? 'on' : ''}`, title: t('Repo Overview: every repository, its changes, pipelines and merge requests'), onClick: () => (state.tab === 'repos' ? setTab(store.get('lastTabBeforeRepos', 'history')) : reposOverview()) }, icon('grid', 12), h('span', { class: 'rov-nav-t' }, t('Repo Overview'))),
     // ahead/behind live on the Pull and Push buttons; here only what they cannot say
-    !st.upstream && st.branch && h('span', { class: 'sync', title: 'This branch has no remote branch yet: Push publishes it' }, 'not published'),
+    !st.upstream && st.branch && h('span', { class: 'sync', title: t('This branch has no remote branch yet: Push publishes it') }, t('not published')),
     ciBadge()
   ])
 }
@@ -1862,7 +1916,7 @@ async function manualRefresh() {
     setWorking('refresh', false, ok)
   }
   const after = state.status ? state.status.oid + '|' + (state.status.files?.length || 0) + '|' + (state.status.ahead || 0) + '|' + (state.status.behind || 0) : ''
-  if (ok) toast(after === before ? 'Refreshed · no changes' : 'Refreshed · updated', 'ok', 1800)
+  if (ok) toast(after === before ? t('Refreshed · no changes') : t('Refreshed · updated'), 'ok', 1800)
 }
 
 /** Ask the AI agent (Settings → Plugins → Git Control) to resolve the current conflicts in a terminal. */
@@ -1870,7 +1924,7 @@ async function resolveWithAi() {
   setBusy(1)
   try {
     const r = await request('ai.resolve', { repo: state.repo }, 30000)
-    toast(`${r.agent} is resolving the conflicts in a new terminal. Review its work, then press Continue.`, 'ok', 7000)
+    toast(t('{agent} is resolving the conflicts in a new terminal. Review its work, then press Continue.', { agent: r.agent }), 'ok', 7000)
   } catch (e) {
     toast(e.message, 'error')
   } finally {
@@ -1880,24 +1934,24 @@ async function resolveWithAi() {
 
 function pullMenu(anchor) {
   menu(anchor, [
-    { label: 'Pull (merge)', icon: 'pull', onClick: () => run('pull', {}, { success: 'Pulled' }) },
-    { label: 'Pull (rebase)', icon: 'pull', onClick: () => run('pull', { rebase: true }, { success: 'Pulled with rebase' }) },
-    { label: 'Pull (fast-forward only)', icon: 'pull', onClick: () => run('pull', { ffOnly: true }, { success: 'Pulled' }) },
+    { label: t('Pull (merge)'), icon: 'pull', onClick: () => run('pull', {}, { success: t('Pulled') }) },
+    { label: t('Pull (rebase)'), icon: 'pull', onClick: () => run('pull', { rebase: true }, { success: t('Pulled with rebase') }) },
+    { label: t('Pull (fast-forward only)'), icon: 'pull', onClick: () => run('pull', { ffOnly: true }, { success: t('Pulled') }) },
     '-',
-    { label: 'Fetch all', icon: 'fetch', onClick: () => run('fetch', {}, { success: 'Fetched' }) }
+    { label: t('Fetch all'), icon: 'fetch', onClick: () => run('fetch', {}, { success: t('Fetched') }) }
   ])
 }
 function pushMenu(anchor) {
   menu(anchor, [
-    { label: 'Push', icon: 'push', onClick: () => run('push', {}, { success: 'Pushed' }) },
+    { label: t('Push'), icon: 'push', onClick: () => run('push', {}, { success: t('Pushed') }) },
     '-',
     {
-      label: 'Force push (with lease)…',
+      label: t('Force push (with lease)…'),
       icon: 'alert',
       danger: true,
       onClick: async () => {
-        if (await confirmBox('Force push?', 'This overwrites the remote branch if nobody else pushed since your last fetch.', 'Force push', true))
-          run('push', { force: true }, { success: 'Force pushed' })
+        if (await confirmBox(t('Force push?'), t('This overwrites the remote branch if nobody else pushed since your last fetch.'), t('Force push'), true))
+          run('push', { force: true }, { success: t('Force pushed') })
       }
     }
   ])
@@ -1912,11 +1966,11 @@ async function quickSwitch(anchor) {
   }
   const local = r.local.filter((b) => !b.current).slice(0, 15)
   menu(anchor, [
-    { header: 'Switch to' },
+    { header: t('Switch to') },
     ...local.map((b) => ({ label: b.name, icon: 'branch', onClick: () => checkout(b.name) })),
     local.length ? '-' : null,
-    { label: 'New branch…', icon: 'plus', onClick: () => newBranch() },
-    { label: 'All branches', icon: 'right', onClick: () => setTab('branches') }
+    { label: t('New branch…'), icon: 'plus', onClick: () => newBranch() },
+    { label: t('All branches'), icon: 'right', onClick: () => setTab('branches') }
   ])
 }
 
@@ -1926,31 +1980,31 @@ function renderBanner() {
   if (st?.bisect && !st.state) return b.append(bisectBanner(st))
   if (!st?.state) return
   const conflicts = st.files.filter((f) => f.conflict).length
-  const labels = { merge: 'Merge', rebase: 'Rebase', 'cherry-pick': 'Cherry-pick', revert: 'Revert' }
+  const labels = { merge: t('Merge'), rebase: t('Rebase'), 'cherry-pick': t('Cherry-pick'), revert: t('Revert') }
   b.append(
     h(
       'div',
       { class: 'banner' },
-      h('div', { class: 'row' }, icon('alert'), h('strong', null, `${labels[st.state]} in progress`), st.sides && h('span', { class: 'cf-route sm' }, sideChip('incoming', st.sides.incoming), icon('right', 12), sideChip('current', st.sides.current))),
+      h('div', { class: 'row' }, icon('alert'), h('strong', null, t('{op} in progress', { op: labels[st.state] })), st.sides && h('span', { class: 'cf-route sm' }, sideChip('incoming', st.sides.incoming), icon('right', 12), sideChip('current', st.sides.current))),
       h(
         'div',
         { class: 'dim', style: { fontSize: '11.5px' } },
-        conflicts ? `${conflicts} conflicted file${conflicts > 1 ? 's' : ''}. Resolve them, then continue.` : 'No conflicts left. Continue to finish.'
+        conflicts ? (conflicts > 1 ? t('{n} conflicted files. Resolve them, then continue.', { n: conflicts }) : t('{n} conflicted file. Resolve them, then continue.', { n: conflicts })) : t('No conflicts left. Continue to finish.')
       ),
       h(
         'div',
         { class: 'row' },
-        conflicts > 0 && h('button', { class: 'btn sm primary', onClick: openConflicts }, icon('edit', 12), 'Resolve conflicts'),
-        conflicts > 0 && h('button', { class: 'btn sm', onClick: resolveWithAi }, icon('wand', 12), 'Resolve with AI'),
-        h('button', { class: `btn sm ${conflicts ? '' : 'primary'}`, disabled: conflicts > 0, onClick: () => run('continue', {}, { success: st.state === 'merge' ? 'Merge committed' : 'Continued' }) }, st.state === 'merge' ? 'Commit merge' : 'Continue'),
-        st.state !== 'merge' && h('button', { class: 'btn sm', onClick: () => run('skip', {}, { success: 'Skipped' }) }, 'Skip'),
+        conflicts > 0 && h('button', { class: 'btn sm primary', onClick: openConflicts }, icon('edit', 12), t('Resolve conflicts')),
+        conflicts > 0 && h('button', { class: 'btn sm', onClick: resolveWithAi }, icon('wand', 12), t('Resolve with AI')),
+        h('button', { class: `btn sm ${conflicts ? '' : 'primary'}`, disabled: conflicts > 0, onClick: () => run('continue', {}, { success: st.state === 'merge' ? t('Merge committed') : t('Continued') }) }, st.state === 'merge' ? t('Commit merge') : t('Continue')),
+        st.state !== 'merge' && h('button', { class: 'btn sm', onClick: () => run('skip', {}, { success: t('Skipped') }) }, t('Skip')),
         h(
           'button',
           {
             class: 'btn sm danger',
-            onClick: async () => (await confirmBox(`Abort ${st.state}?`, 'Your branch goes back to how it was before.', 'Abort', true)) && run('abort', {}, { success: 'Aborted' })
+            onClick: async () => (await confirmBox(t('Abort {op}?', { op: st.state }), t('Your branch goes back to how it was before.'), t('Abort'), true)) && run('abort', {}, { success: t('Aborted') })
           },
-          'Abort'
+          t('Abort')
         )
       )
     )
@@ -1961,15 +2015,15 @@ function renderBanner() {
    tabs
    ========================================================================= */
 const TABS = [
-  ['history', IN_TAB ? 'Graph' : 'History', 'layers'],
-  ['changes', IN_TAB ? 'Commit' : 'Changes', 'commit'],
+  ['history', IN_TAB ? t('Graph') : t('History'), 'layers'],
+  ['changes', IN_TAB ? t('Commit') : t('Changes'), 'commit'],
   ['reviews', 'MR / PR', 'pr'],
-  ['pipelines', 'Pipelines', 'pipeline'],
-  ['branches', 'Branches', 'branch'],
-  ['worktrees', 'Worktrees', 'worktree'],
-  ['stash', 'Stash', 'stash'],
-  ['reflog', 'Reflog', 'history'],
-  ['settings', 'Settings', 'settings']
+  ['pipelines', t('Pipelines'), 'pipeline'],
+  ['branches', t('Branches'), 'branch'],
+  ['worktrees', t('Worktrees'), 'worktree'],
+  ['stash', t('Stash'), 'stash'],
+  ['reflog', t('Reflog'), 'history'],
+  ['settings', t('Settings'), 'settings']
 ].filter(([id]) => !(IN_TAB && id === 'branches')) // the tab shows branches in its sidebar
 function renderTabs() {
   const nav = clear($('#tabs'))
@@ -2123,7 +2177,7 @@ async function renderView({ force = false } = {}) {
   document.body.classList.remove('is-loading-repo')
   if (!state.status) {
     clear(main).append(
-      h('div', { class: 'empty' }, icon('alert', 28), h('div', null, /not a git repository/i.test(state.statusError || '') || !state.statusError ? 'Not a Git repository' : 'Could not read this repository'), h('div', { class: 'dim mono', style: { marginTop: '6px' } }, state.statusError || state.repo))
+      h('div', { class: 'empty' }, icon('alert', 28), h('div', null, /not a git repository/i.test(state.statusError || '') || !state.statusError ? t('Not a Git repository') : t('Could not read this repository')), h('div', { class: 'dim mono', style: { marginTop: '6px' } }, state.statusError || state.repo))
     )
     return
   }
@@ -2165,7 +2219,7 @@ async function renderView({ force = false } = {}) {
   try {
     el = await views[state.tab]()
   } catch (e) {
-    el = h('div', { class: 'view' }, state.tab === 'history' && searchBox && h('div', { class: 'history-bar' }, h('div', { class: 'graph-search-wrap' }, searchBox, iconBtn('x', 'Clear search', () => ((searchBox.value = ''), (state.history.search = ''), resetHistory(), renderView()), { class: 'icon-btn search-clear' }))), h('div', { class: 'empty' }, icon('alert', 28), h('div', null, e.message)))
+    el = h('div', { class: 'view' }, state.tab === 'history' && searchBox && h('div', { class: 'history-bar' }, h('div', { class: 'graph-search-wrap' }, searchBox, iconBtn('x', t('Clear search'), () => ((searchBox.value = ''), (state.history.search = ''), resetHistory(), renderView()), { class: 'icon-btn search-clear' }))), h('div', { class: 'empty' }, icon('alert', 28), h('div', null, e.message)))
   }
   clearTimeout(placeholder)
   if (seq !== renderSeq) return
@@ -2225,22 +2279,22 @@ function emptyRepo() {
     'div',
     { class: 'empty' },
     icon('worktree', 32),
-    h('div', null, 'No repository for this workspace'),
-    h('div', { style: { marginTop: '10px' } }, h('button', { class: 'btn', onClick: (e) => repoMenu(e.currentTarget) }, icon('repo', 12), 'Choose repository'))
+    h('div', null, t('No repository for this workspace')),
+    h('div', { style: { marginTop: '10px' } }, h('button', { class: 'btn', onClick: (e) => repoMenu(e.currentTarget) }, icon('repo', 12), t('Choose repository')))
   )
 }
 
 function openSheet(title, body, actions = []) {
   const under = state.sheets[state.sheets.length - 1]
   // stacked on another sheet: Back returns to it (Esc too); Close shuts them all
-  const back = under && h('button', { class: 'sheet-back', title: 'Back (Esc)', 'aria-label': 'Back', onClick: closeSheet }, icon('left', 14), h('span', { class: 'sheet-back-t' }, under.dock ? 'Details' : 'Back'))
+  const back = under && h('button', { class: 'sheet-back', title: t('Back (Esc)'), 'aria-label': t('Back'), onClick: closeSheet }, icon('left', 14), h('span', { class: 'sheet-back-t' }, under.dock ? t('Details') : t('Back')))
   const closeAll = () => {
     while (state.sheets.length) closeSheet()
   }
   const el = h(
     'div',
     { class: 'sheet' },
-    h('div', { class: 'sheet-head' }, back, h('div', { class: 'sheet-title', title }, title), ...actions, actions.length > 0 && h('span', { class: 'sheet-sep' }), iconBtn('x', under ? 'Close all' : 'Close (Esc)', under ? closeAll : closeSheet, { class: 'icon-btn sheet-close' })),
+    h('div', { class: 'sheet-head' }, back, h('div', { class: 'sheet-title', title }, title), ...actions, actions.length > 0 && h('span', { class: 'sheet-sep' }), iconBtn('x', under ? t('Close all') : t('Close (Esc)'), under ? closeAll : closeSheet, { class: 'icon-btn sheet-close' })),
     h('div', { class: 'sheet-body' }, body)
   )
   document.querySelectorAll('.sheet').forEach((x) => x.remove())
@@ -2334,7 +2388,7 @@ function placeSheet(el) {
   const w = store.get(wkey, 0)
   el.style.width = w ? `${Math.min(w, host.clientWidth - 120)}px` : ''
   if (!el.querySelector('.sheet-grip')) {
-    const grip = h('div', { class: 'sheet-grip', title: 'Drag to resize' })
+    const grip = h('div', { class: 'sheet-grip', title: t('Drag to resize') })
     grip.addEventListener('pointerdown', (e) => {
       e.preventDefault()
       grip.setPointerCapture(e.pointerId)
@@ -2461,7 +2515,7 @@ function pairLines(lines) {
  * hunkActions: [{ label, icon, run(patch) }] on every hunk; onLine({ path, side, line, text }) makes lines clickable.
  */
 function renderDiff(text, hunkActions, { onLine, images } = {}) {
-  if (!text.trim()) return h('div', { class: 'empty' }, 'No changes to show (binary or identical file)')
+  if (!text.trim()) return h('div', { class: 'empty' }, t('No changes to show (binary or identical file)'))
   const files = parseDiff(text)
   const patches = hunkActions?.length ? splitHunks(text) : []
   const root = h('div', { class: 'dv' })
@@ -2469,11 +2523,11 @@ function renderDiff(text, hunkActions, { onLine, images } = {}) {
   let mode = store.get('diffMode', 'unified')
   let wrapOn = store.get('diffWrap', false)
   const seg = h('div', { class: 'segmented' })
-  const wrapBtn = h('button', { class: 'btn sm dv-wrap', title: 'Wrap long lines' }, icon('layers', 12), 'Wrap')
+  const wrapBtn = h('button', { class: 'btn sm dv-wrap', title: t('Wrap long lines') }, icon('layers', 12), t('Wrap'))
   const drawBar = () => {
     clear(seg).append(
-      h('button', { class: mode === 'unified' ? 'on' : '', onClick: () => ((mode = 'unified'), store.set('diffMode', mode), draw()) }, 'Unified'),
-      h('button', { class: mode === 'split' ? 'on' : '', onClick: () => ((mode = 'split'), store.set('diffMode', mode), draw()) }, 'Split')
+      h('button', { class: mode === 'unified' ? 'on' : '', onClick: () => ((mode = 'unified'), store.set('diffMode', mode), draw()) }, t('Unified')),
+      h('button', { class: mode === 'split' ? 'on' : '', onClick: () => ((mode = 'split'), store.set('diffMode', mode), draw()) }, t('Split'))
     )
     wrapBtn.classList.toggle('on', wrapOn)
   }
@@ -2486,8 +2540,8 @@ function renderDiff(text, hunkActions, { onLine, images } = {}) {
       seg,
       wrapBtn,
       h('span', { class: 'grow' }),
-      files.length > 1 && h('span', { class: 'dim' }, `${files.length} files`),
-      files.length === 1 && !files[0].badges.includes('deleted') && h('button', { class: 'btn sm', title: `Open ${files[0].path} in the editor`, onClick: () => openRepoFile(files[0].path) }, icon('file', 12), 'Open file'),
+      files.length > 1 && h('span', { class: 'dim' }, t('{n} files', { n: files.length })),
+      files.length === 1 && !files[0].badges.includes('deleted') && h('button', { class: 'btn sm', title: t('Open {file} in the editor', { file: files[0].path }), onClick: () => openRepoFile(files[0].path) }, icon('file', 12), t('Open file')),
       h('span', { class: 'dv-count' }, h('span', { class: 'a' }, `+${total[0]}`), h('span', { class: 'd' }, `−${total[1]}`))
     ),
     body
@@ -2499,7 +2553,7 @@ function renderDiff(text, hunkActions, { onLine, images } = {}) {
   const clickable = (el, f, ln, side) => {
     if (!onLine || !ln) return el
     el.classList.add('commentable')
-    el.title = 'Click to comment on this line'
+    el.title = t('Click to comment on this line')
     el.addEventListener('click', () => onLine({ path: f.path, side, line: side === 'old' ? ln.o : ln.n, text: ln.t }))
     return el
   }
@@ -2519,14 +2573,14 @@ function renderDiff(text, hunkActions, { onLine, images } = {}) {
           'div',
           { class: 'dv-file' },
           icon('file', 13),
-          h('span', { class: 'dv-path link', title: `Open ${f.path} in the editor`, onClick: () => openRepoFile(f.path) }, dir && h('span', { class: 'dim' }, dir), h('strong', null, f.path.slice(dir.length))),
-          ...f.badges.map((b) => h('span', { class: `pill dv-${b}` }, b)),
-          f.badges.includes('renamed') && f.oldPath !== f.path && h('span', { class: 'dim mono' }, `from ${f.oldPath}`),
+          h('span', { class: 'dv-path link', title: t('Open {file} in the editor', { file: f.path }), onClick: () => openRepoFile(f.path) }, dir && h('span', { class: 'dim' }, dir), h('strong', null, f.path.slice(dir.length))),
+          ...f.badges.map((b) => h('span', { class: `pill dv-${b}` }, { new: t('new'), deleted: t('deleted'), renamed: t('renamed') }[b] || b)),
+          f.badges.includes('renamed') && f.oldPath !== f.path && h('span', { class: 'dim mono' }, t('from {path}', { path: f.oldPath })),
           h('span', { class: 'grow' }),
           h('span', { class: 'dv-count' }, h('span', { class: 'a' }, `+${f.add}`), h('span', { class: 'd' }, `−${f.del}`))
         )
       )
-      if (f.binary) frag.append((images && imagePreview(f, images)) || h('div', { class: 'dv-note' }, 'Binary file: no text to compare'))
+      if (f.binary) frag.append((images && imagePreview(f, images)) || h('div', { class: 'dv-note' }, t('Binary file: no text to compare')))
       const lineCount = f.hunks.reduce((t, hk) => t + hk.lines.length, 0)
       let budget = expanded.has(f) ? Infinity : MAX_LINES
       for (const hk of f.hunks) {
@@ -2537,10 +2591,10 @@ function renderDiff(text, hunkActions, { onLine, images } = {}) {
           h(
             'div',
             { class: 'dv-hunk' },
-            h('span', { class: 'dv-range' }, hk.newCount ? `Lines ${hk.newStart}${last > hk.newStart ? `–${last}` : ''}` : `Removed at line ${hk.oldStart}`),
+            h('span', { class: 'dv-range' }, hk.newCount ? (last > hk.newStart ? t('Lines {from}–{to}', { from: hk.newStart, to: last }) : t('Line {n}', { n: hk.newStart })) : t('Removed at line {n}', { n: hk.oldStart })),
             hk.context && h('span', { class: 'dv-ctx mono' }, hk.context),
             h('span', { class: 'grow' }),
-            patch && hunkActions.map((a) => h('button', { class: `hunk-btn ${a.danger ? 'danger' : ''}`, title: `${a.label} this hunk`, onClick: () => a.run(patch) }, icon(a.icon, 11), a.label))
+            patch && hunkActions.map((a) => h('button', { class: `hunk-btn ${a.danger ? 'danger' : ''}`, title: t('{action} this hunk', { action: a.label }), onClick: () => a.run(patch) }, icon(a.icon, 11), a.label))
           )
         )
         const lines = hk.lines.length > budget ? hk.lines.slice(0, budget) : hk.lines
@@ -2584,8 +2638,8 @@ function renderDiff(text, hunkActions, { onLine, images } = {}) {
           h(
             'div',
             { class: 'dv-note dv-more' },
-            `Showing the first ${MAX_LINES} of ${lineCount} lines. `,
-            h('button', { class: 'btn sm', onClick: () => (expanded.add(f), draw()) }, `Show all ${lineCount} lines`)
+            t('Showing the first {shown} of {total} lines.', { shown: MAX_LINES, total: lineCount }) + ' ',
+            h('button', { class: 'btn sm', onClick: () => (expanded.add(f), draw()) }, t('Show all {n} lines', { n: lineCount }))
           )
         )
     }
@@ -2605,7 +2659,7 @@ async function openRepoFile(file) {
 
 /** The list on the left, the selected item's diff on the right (Commit and Stash tabs, full tab only). */
 function splitWrap(root, hint) {
-  const empty = () => h('div', { class: 'empty' }, icon('file', 26), h('div', null, hint), h('div', { class: 'dim' }, '↑ ↓ move between files'))
+  const empty = () => h('div', { class: 'empty' }, icon('file', 26), h('div', null, hint), h('div', { class: 'dim' }, t('↑ ↓ move between files')))
   const pane = h('div', { class: 'diff-pane' }, empty())
   pane._empty = () => {
     clear(pane).append(empty())
@@ -2623,8 +2677,8 @@ function imagePreview(f, images) {
   if (!IMAGE_RE.test(f.path)) return null
   const oldRef = f.badges.includes('new') ? null : images.old
   const newRef = f.badges.includes('deleted') ? null : images.new
-  const side = (label, ref, file) => {
-    const box = h('div', { class: 'img-side' }, h('div', { class: 'img-label ' + (/Before|Deleted/.test(label) ? 'del' : 'add') }, label), h('div', { class: 'img-frame' }, h('div', { class: 'inline-skeleton' }, h('span'), h('span'))))
+  const side = (label, ref, file, del) => {
+    const box = h('div', { class: 'img-side' }, h('div', { class: 'img-label ' + (del ? 'del' : 'add') }, label), h('div', { class: 'img-frame' }, h('div', { class: 'inline-skeleton' }, h('span'), h('span'))))
     const meta = h('div', { class: 'img-meta dim' })
     box.append(meta)
     call('fileImage', { ref, file }).then(
@@ -2632,7 +2686,7 @@ function imagePreview(f, images) {
         const img = h('img', { src, alt: file })
         img.onload = () => (meta.textContent = `${img.naturalWidth} × ${img.naturalHeight} · ${size < 1024 ? size + ' B' : size < 1048576 ? (size / 1024).toFixed(1) + ' KB' : (size / 1048576).toFixed(1) + ' MB'}`)
         img.onclick = () => openRepoFile(file)
-        img.title = 'Open in the editor'
+        img.title = t('Open in the editor')
         clear(box.querySelector('.img-frame')).append(img)
       },
       (e) => clear(box.querySelector('.img-frame')).append(h('div', { class: 'dv-note' }, e.message))
@@ -2640,8 +2694,8 @@ function imagePreview(f, images) {
     return box
   }
   const sides = []
-  if (oldRef != null) sides.push(side(newRef == null ? 'Deleted' : 'Before', oldRef, f.oldPath || f.path))
-  if (newRef != null) sides.push(side(oldRef == null ? 'Added' : 'After', newRef, f.path))
+  if (oldRef != null) sides.push(side(newRef == null ? t('Deleted') : t('Before'), oldRef, f.oldPath || f.path, true))
+  if (newRef != null) sides.push(side(oldRef == null ? t('Added') : t('After'), newRef, f.path, false))
   if (!sides.length) return null
   return h('div', { class: 'img-preview' + (sides.length > 1 ? ' two' : '') }, ...sides)
 }
@@ -2652,12 +2706,12 @@ async function showDiff(title, loader, actions = [], hunkActions, images) {
   let sheet
   if (pane) {
     clear(pane).append(
-      h('div', { class: 'sheet-head' }, h('div', { class: 'sheet-title', title }, title), ...actions, h('span', { class: 'sheet-sep' }), iconBtn('x', 'Close', () => pane._empty?.(), { class: 'icon-btn sheet-close' })),
+      h('div', { class: 'sheet-head' }, h('div', { class: 'sheet-title', title }, title), ...actions, h('span', { class: 'sheet-sep' }), iconBtn('x', t('Close'), () => pane._empty?.(), { class: 'icon-btn sheet-close' })),
       h('div', { class: 'sheet-body' }, h('div', { class: 'inline-skeleton' }, h('span'), h('span'), h('span')))
     )
     sheet = { el: pane, inPane: true }
   } else {
-    openSheet(title, h('div', { class: 'empty' }, 'Loading…'), actions)
+    openSheet(title, h('div', { class: 'empty' }, t('Loading…')), actions)
     sheet = state.sheets[state.sheets.length - 1]
   }
   const load = async () => {
@@ -2665,7 +2719,7 @@ async function showDiff(title, loader, actions = [], hunkActions, images) {
       const text = await loader()
       const body = sheet.el.querySelector('.sheet-body')
       if (!text.trim() && hunkActions) {
-        if (sheet.inPane) clear(sheet.el).append(h('div', { class: 'empty' }, 'No changes left in this file'))
+        if (sheet.inPane) clear(sheet.el).append(h('div', { class: 'empty' }, t('No changes left in this file')))
         else if (state.sheets.includes(sheet)) closeSheet()
         return
       }
@@ -2675,7 +2729,7 @@ async function showDiff(title, loader, actions = [], hunkActions, images) {
           hunkActions?.map((a) => ({
             ...a,
             run: async (patch) => {
-              if (a.danger && !(await confirmBox('Discard this hunk?', 'The lines go back to how they were. This cannot be undone.', 'Discard', true))) return
+              if (a.danger && !(await confirmBox(t('Discard this hunk?'), t('The lines go back to how they were. This cannot be undone.'), t('Discard'), true))) return
               try {
                 await call('applyPatch', { patch, ...a.args })
                 toast(a.done)
@@ -2696,10 +2750,10 @@ async function showDiff(title, loader, actions = [], hunkActions, images) {
   await load()
 }
 const HUNK_STAGE = [
-  { label: 'Discard', icon: 'undo', danger: true, args: { reverse: true }, done: 'Hunk discarded' },
-  { label: 'Stage', icon: 'plus', args: { cached: true }, done: 'Hunk staged' }
+  { label: t('Discard'), icon: 'undo', danger: true, args: { reverse: true }, done: t('Hunk discarded') },
+  { label: t('Stage'), icon: 'plus', args: { cached: true }, done: t('Hunk staged') }
 ]
-const HUNK_UNSTAGE = [{ label: 'Unstage', icon: 'minus', args: { cached: true, reverse: true }, done: 'Hunk unstaged' }]
+const HUNK_UNSTAGE = [{ label: t('Unstage'), icon: 'minus', args: { cached: true, reverse: true }, done: t('Hunk unstaged') }]
 
 /* =========================================================================
    Changes
@@ -2711,7 +2765,7 @@ function fileRow(f, { staged, onClick, actions }) {
   return h(
     'div',
     { class: 'item', title: f.orig ? `${f.orig} → ${f.path}` : f.path, 'data-path': f.path, 'data-staged': staged ? '1' : '0', onClick: (e) => (markSelected(e.currentTarget), onClick && onClick(e)) },
-    h('span', { class: `status-letter s-${letter}`, title: f.untracked ? 'Untracked' : '' }, f.untracked ? 'U' : letter),
+    h('span', { class: `status-letter s-${letter}`, title: f.untracked ? t('Untracked') : '' }, f.untracked ? 'U' : letter),
     h('span', { class: 'file-name' }, name),
     dir && h('span', { class: 'file-dir grow' }, dir),
     !dir && h('span', { class: 'grow' }),
@@ -2727,11 +2781,11 @@ async function viewChanges() {
 
   const root = h('div', { class: 'view', style: { paddingTop: 0 } })
   if (st.filesTotal > st.files.length)
-    root.append(h('div', { class: 'banner' }, h('div', { class: 'row' }, icon('alert'), h('strong', null, `Showing ${st.files.length.toLocaleString()} of ${st.filesTotal.toLocaleString()} changed files`)), h('div', { class: 'dim', style: { fontSize: '11.5px' } }, 'So many usually means a build or dependency folder is not ignored. Add it to .gitignore and the list gets short again.')))
+    root.append(h('div', { class: 'banner' }, h('div', { class: 'row' }, icon('alert'), h('strong', null, t('Showing {shown} of {total} changed files', { shown: st.files.length.toLocaleString(LANG), total: st.filesTotal.toLocaleString(LANG) }))), h('div', { class: 'dim', style: { fontSize: '11.5px' } }, t('So many usually means a build or dependency folder is not ignored. Add it to .gitignore and the list gets short again.'))))
 
   // commit box
   const ta = h('textarea', {
-    placeholder: st.branch ? `Message for ${st.branch} · Ctrl+Enter` : 'Commit message',
+    placeholder: st.branch ? t('Message for {branch} · Ctrl+Enter', { branch: st.branch }) : t('Commit message'),
     value: state.commitDraft,
     onInput: (e) => {
       state.commitDraft = e.target.value
@@ -2756,8 +2810,8 @@ async function viewChanges() {
     }
   })
   let pushMode = null // 'push' | 'publish' when there is nothing to commit but something to send
-  const commitBtn = h('button', { class: 'btn primary', onClick: () => (pushMode ? run('push', {}, { success: pushMode === 'publish' ? `Published ${st.branch}` : 'Pushed' }) : doCommit({})) })
-  const commitMore = h('button', { class: 'btn primary', title: 'More commit options', onClick: (e) => commitMenu(e.currentTarget) }, icon('down', 12))
+  const commitBtn = h('button', { class: 'btn primary', onClick: () => (pushMode ? run('push', {}, { success: pushMode === 'publish' ? t('Published {branch}', { branch: st.branch }) : t('Pushed') }) : doCommit({})) })
+  const commitMore = h('button', { class: 'btn primary', title: t('More commit options'), onClick: (e) => commitMenu(e.currentTarget) }, icon('down', 12))
   function updateCommitBtn() {
     const n = staged.length
     const nothing = !n && !unstaged.length && !state.amend
@@ -2766,15 +2820,15 @@ async function viewChanges() {
     commitMore.style.display = pushMode ? 'none' : ''
     if (pushMode) {
       commitBtn.disabled = false
-      commitBtn.title = pushMode === 'publish' ? `Push ${st.branch} to the remote for the first time` : `Push ${st.ahead} commit${st.ahead > 1 ? 's' : ''} to ${st.upstream}`
-      clear(commitBtn).append(icon('push', 13), pushMode === 'publish' ? `Publish ${st.branch}` : `Push ${st.ahead} commit${st.ahead > 1 ? 's' : ''}`)
+      commitBtn.title = pushMode === 'publish' ? t('Push {branch} to the remote for the first time', { branch: st.branch }) : st.ahead > 1 ? t('Push {n} commits to {upstream}', { n: st.ahead, upstream: st.upstream }) : t('Push {n} commit to {upstream}', { n: st.ahead, upstream: st.upstream })
+      clear(commitBtn).append(icon('push', 13), pushMode === 'publish' ? t('Publish {branch}', { branch: st.branch }) : st.ahead > 1 ? t('Push {n} commits', { n: st.ahead }) : t('Push {n} commit', { n: st.ahead }))
       return
     }
     commitBtn.title = ''
     const can = !!state.commitDraft.trim() && (n > 0 || state.amend || (unstaged.length > 0))
     commitBtn.disabled = !can
     commitMore.disabled = !state.commitDraft.trim()
-    clear(commitBtn).append(icon('check', 13), state.amend ? 'Amend' : n ? `Commit ${n} file${n > 1 ? 's' : ''}` : unstaged.length ? 'Commit all' : 'Commit')
+    clear(commitBtn).append(icon('check', 13), state.amend ? t('Amend') : n ? (n > 1 ? t('Commit {n} files', { n }) : t('Commit {n} file', { n })) : unstaged.length ? t('Commit all') : t('Commit'))
   }
   updateCommitBtn()
 
@@ -2784,14 +2838,14 @@ async function viewChanges() {
     if (!staged.length && !state.amend && !extra.allowEmpty) {
       if (!unstaged.length) return
       // Nothing staged: stage everything first, the usual "commit all".
-      if (!(await confirmBox('Nothing staged', 'Stage all changes and commit them?', 'Stage all & commit'))) return
+      if (!(await confirmBox(t('Nothing staged'), t('Stage all changes and commit them?'), t('Stage all & commit')))) return
       await call('stageAll').catch((e) => toast(e.message, 'error'))
     }
     if (!state.amend && !(await preCommitCheck())) return
-    const out = await run('commit', args, { success: extra.push || !state.amend ? undefined : 'Amended', quiet: true })
+    const out = await run('commit', args, { success: extra.push || !state.amend ? undefined : t('Amended'), quiet: true })
     // forgot a file or a typo? one click puts the last commit back in the box to amend
-    if (out !== undefined && !extra.push && !state.amend) toast('Committed', 'ok', 8000, { label: 'Amend', run: () => ((state.amend = true), call('lastMessage').then((m) => ((state.commitDraft = m || ''), setTab('changes'), renderView({ force: true })), () => setTab('changes'))) })
-    if (extra.push && out !== undefined) out?.pushError ? toast(`Committed, but the push failed: ${out.pushError}`, 'error') : toast('Committed and pushed')
+    if (out !== undefined && !extra.push && !state.amend) toast(t('Committed'), 'ok', 8000, { label: t('Amend'), run: () => ((state.amend = true), call('lastMessage').then((m) => ((state.commitDraft = m || ''), setTab('changes'), renderView({ force: true })), () => setTab('changes'))) })
+    if (extra.push && out !== undefined) out?.pushError ? toast(t('Committed, but the push failed: {error}', { error: out.pushError }), 'error') : toast(t('Committed and pushed'))
     if (out !== undefined) {
       state.commitDraft = ''
       state.amend = false
@@ -2801,9 +2855,9 @@ async function viewChanges() {
   }
   function commitMenu(anchor) {
     menu(anchor, [
-      { label: 'Commit & push', icon: 'push', onClick: () => doCommit({ push: true }) },
-      { label: 'Commit with sign-off', icon: 'user', onClick: () => doCommit({ signoff: true }) },
-      { label: 'Empty commit', icon: 'commit', onClick: () => doCommit({ allowEmpty: true }) }
+      { label: t('Commit & push'), icon: 'push', onClick: () => doCommit({ push: true }) },
+      { label: t('Commit with sign-off'), icon: 'user', onClick: () => doCommit({ signoff: true }) },
+      { label: t('Empty commit'), icon: 'commit', onClick: () => doCommit({ allowEmpty: true }) }
     ])
   }
 
@@ -2815,14 +2869,14 @@ async function viewChanges() {
       h(
         'div',
         { class: 'row' },
-        h('label', { class: 'check' }, amend, 'Amend last commit'),
+        h('label', { class: 'check' }, amend, t('Amend last commit')),
         h('span', { class: 'grow' }),
-        h('button', { type: 'button', class: 'btn sm ai-review-btn', title: 'AI reviews what you are about to commit (the staged changes, or every change when nothing is staged)', onClick: () => localReviewModal({ staged: true, onNext: () => ta.focus() }) }, icon('sparkle', 12), 'Review'),
+        h('button', { type: 'button', class: 'btn sm ai-review-btn', title: t('AI reviews what you are about to commit (the staged changes, or every change when nothing is staged)'), onClick: () => localReviewModal({ staged: true, onNext: () => ta.focus() }) }, icon('sparkle', 12), t('Review')),
         h(
           'button',
           {
             class: 'btn sm',
-            title: 'Generate a commit message with AI',
+            title: t('Generate a commit message with AI'),
             disabled: !st.files.length,
             onClick: () =>
               aiCommitModal({
@@ -2842,7 +2896,7 @@ async function viewChanges() {
               })
           },
           icon('wand', 12),
-          'AI message'
+          t('AI message')
         )
       ),
       h('div', { class: 'split' }, commitBtn, commitMore)
@@ -2851,16 +2905,16 @@ async function viewChanges() {
 
   if (!st.files.length) {
     if (IN_TAB) {
-      root.append(h('div', { class: 'empty clean-note' }, icon('check', 28), h('div', null, 'Working tree clean'), h('div', { class: 'dim', style: { fontSize: '12px', marginTop: '4px' } }, pushMode === 'push' ? `Nothing to commit · ${st.ahead} commit${st.ahead > 1 ? 's' : ''} waiting to push` : pushMode === 'publish' ? `Nothing to commit · ${st.branch} is not on the remote yet` : 'Nothing to commit. Edits you make will show up here.')))
-      return splitWrap(root, 'Nothing to show: the working tree is clean')
+      root.append(h('div', { class: 'empty clean-note' }, icon('check', 28), h('div', null, t('Working tree clean')), h('div', { class: 'dim', style: { fontSize: '12px', marginTop: '4px' } }, pushMode === 'push' ? (st.ahead > 1 ? t('Nothing to commit · {n} commits waiting to push', { n: st.ahead }) : t('Nothing to commit · {n} commit waiting to push', { n: st.ahead })) : pushMode === 'publish' ? t('Nothing to commit · {branch} is not on the remote yet', { branch: st.branch }) : t('Nothing to commit. Edits you make will show up here.'))))
+      return splitWrap(root, t('Nothing to show: the working tree is clean'))
     }
-    root.append(h('div', { class: 'empty clean-note' }, icon('check', 28), h('div', null, 'Working tree clean')))
+    root.append(h('div', { class: 'empty clean-note' }, icon('check', 28), h('div', null, t('Working tree clean'))))
     return root
   }
 
   const folded = store.get('commitFolds', {}) || {}
   const foldHead = (key, ...kids) => {
-    const head = h('div', { class: `section-head fold-head ${folded[key] ? 'folded' : ''}`, role: 'button', tabindex: 0, 'aria-expanded': !folded[key], title: folded[key] ? 'Show the files' : 'Hide the files' }, h('span', { class: 'fold-chev' }, icon('down', 12)), ...kids)
+    const head = h('div', { class: `section-head fold-head ${folded[key] ? 'folded' : ''}`, role: 'button', tabindex: 0, 'aria-expanded': !folded[key], title: folded[key] ? t('Show the files') : t('Hide the files') }, h('span', { class: 'fold-chev' }, icon('down', 12)), ...kids)
     const toggle = (e) => {
       if (e.target.closest('.actions')) return
       store.set('commitFolds', { ...folded, [key]: !folded[key] })
@@ -2871,17 +2925,17 @@ async function viewChanges() {
     return head
   }
   if (conflicts.length) {
-    root.append(foldHead('conflicts', 'Conflicts', h('span', { class: 'count' }, conflicts.length)))
+    root.append(foldHead('conflicts', t('Conflicts'), h('span', { class: 'count' }, conflicts.length)))
     if (!folded.conflicts) for (const f of conflicts)
       root.append(
         fileRow(f, {
           onClick: () => resolveConflict(f.path),
           actions: [
-            iconBtn('more', 'Resolve', (e) =>
+            iconBtn('more', t('Resolve'), (e) =>
               menu(e.currentTarget, [
-                { label: `Accept current (${conflictSides().current})`, icon: 'left', onClick: () => run('useSide', { file: f.path, side: 'ours' }) },
-                { label: `Accept incoming (${conflictSides().incoming})`, icon: 'right', onClick: () => run('useSide', { file: f.path, side: 'theirs' }) },
-                { label: 'Mark as resolved', icon: 'check', onClick: () => run('stage', { files: [f.path] }) }
+                { label: t('Accept current ({side})', { side: conflictSides().current }), icon: 'left', onClick: () => run('useSide', { file: f.path, side: 'ours' }) },
+                { label: t('Accept incoming ({side})', { side: conflictSides().incoming }), icon: 'right', onClick: () => run('useSide', { file: f.path, side: 'theirs' }) },
+                { label: t('Mark as resolved'), icon: 'check', onClick: () => run('stage', { files: [f.path] }) }
               ])
             )
           ]
@@ -2891,21 +2945,21 @@ async function viewChanges() {
 
   if (staged.length) {
     root.append(
-      foldHead('staged', 'Staged', h('span', { class: 'count' }, staged.length), h('div', { class: 'actions' }, iconBtn('minus', 'Unstage all', () => run('unstageAll', {}))))
+      foldHead('staged', t('Staged'), h('span', { class: 'count' }, staged.length), h('div', { class: 'actions' }, iconBtn('minus', t('Unstage all'), () => run('unstageAll', {}))))
     )
     if (!folded.staged) for (const f of staged)
       root.append(
         fileRow(f, {
           staged: true,
-          onClick: () => showDiff(f.path, () => call('diff', { file: f.path, staged: true }), [iconBtn('minus', 'Unstage file', () => (closeSheet(), run('unstage', { files: [f.path] })))], HUNK_UNSTAGE, { old: 'HEAD', new: ':' }),
-          actions: [iconBtn('more', 'More', (e) => fileMenu(e.currentTarget, f)), iconBtn('minus', 'Unstage', () => run('unstage', { files: [f.path] }))]
+          onClick: () => showDiff(f.path, () => call('diff', { file: f.path, staged: true }), [iconBtn('minus', t('Unstage file'), () => (closeSheet(), run('unstage', { files: [f.path] })))], HUNK_UNSTAGE, { old: 'HEAD', new: ':' }),
+          actions: [iconBtn('more', t('More'), (e) => fileMenu(e.currentTarget, f)), iconBtn('minus', t('Unstage'), () => run('unstage', { files: [f.path] }))]
         })
       )
   }
 
   if (unstaged.length) {
     root.append(
-      foldHead('changes', 'Changes', h('span', { class: 'count' }, unstaged.length), h('div', { class: 'actions' }, iconBtn('undo', 'Discard all changes', () => discard(unstaged)), iconBtn('plus', 'Stage all', () => run('stage', { files: unstaged.map((f) => f.path) }))))
+      foldHead('changes', t('Changes'), h('span', { class: 'count' }, unstaged.length), h('div', { class: 'actions' }, iconBtn('undo', t('Discard all changes'), () => discard(unstaged)), iconBtn('plus', t('Stage all'), () => run('stage', { files: unstaged.map((f) => f.path) }))))
     )
     if (!folded.changes) for (const f of unstaged)
       root.append(
@@ -2914,21 +2968,21 @@ async function viewChanges() {
             showDiff(
               f.path,
               () => call('diff', { file: f.path, untracked: f.untracked }),
-              [iconBtn('undo', 'Discard file', () => discard([f], true)), iconBtn('plus', 'Stage file', () => (closeSheet(), run('stage', { files: [f.path] })))],
+              [iconBtn('undo', t('Discard file'), () => discard([f], true)), iconBtn('plus', t('Stage file'), () => (closeSheet(), run('stage', { files: [f.path] })))],
               f.untracked ? undefined : HUNK_STAGE,
               { old: f.untracked ? null : ':', new: '' }
             ),
           actions: [
-            iconBtn('more', 'More', (e) => fileMenu(e.currentTarget, f)),
-            iconBtn('undo', 'Discard changes', () => discard([f])),
-            iconBtn('plus', 'Stage', () => run('stage', { files: [f.path] }))
+            iconBtn('more', t('More'), (e) => fileMenu(e.currentTarget, f)),
+            iconBtn('undo', t('Discard changes'), () => discard([f])),
+            iconBtn('plus', t('Stage'), () => run('stage', { files: [f.path] }))
           ]
         })
       )
   }
   if (!IN_TAB) return root
   // Full tab: the file list on the left, the selected file's diff on the right (↑/↓ to move).
-  const split = splitWrap(root, 'Select a file to see its changes')
+  const split = splitWrap(root, t('Select a file to see its changes'))
   requestAnimationFrame(() => {
     const sel = state.changesSel
     const row = sel && [...root.querySelectorAll('.item[data-path]')].find((r) => r.dataset.path === sel.path && r.dataset.staged === sel.staged)
@@ -2955,11 +3009,11 @@ document.addEventListener('keydown', (e) => {
 })
 
 async function discard(list, fromSheet) {
-  const what = list.length === 1 ? basename(list[0].path) : `${list.length} files`
+  const what = list.length === 1 ? basename(list[0].path) : t('{n} files', { n: list.length })
   const anyUntracked = list.some((f) => f.untracked)
-  if (!(await confirmBox(`Discard changes to ${what}?`, anyUntracked ? 'Untracked files will be deleted. This cannot be undone.' : 'This cannot be undone.', 'Discard', true))) return
+  if (!(await confirmBox(t('Discard changes to {what}?', { what }), anyUntracked ? t('Untracked files will be deleted. This cannot be undone.') : t('This cannot be undone.'), t('Discard'), true))) return
   if (fromSheet) closeSheet()
-  run('discard', { files: list.filter((f) => !f.untracked).map((f) => f.path), untracked: list.filter((f) => f.untracked).map((f) => f.path) }, { success: 'Discarded' })
+  run('discard', { files: list.filter((f) => !f.untracked).map((f) => f.path), untracked: list.filter((f) => f.untracked).map((f) => f.path) }, { success: t('Discarded') })
 }
 
 /* =========================================================================
@@ -3126,29 +3180,29 @@ function refPills(refs, lane) {
     const rs = syncedOf.get(local)
     if (!rs) return el
     el.classList.add('synced')
-    el.title += `\nIn sync with ${rs.join(', ')}`
+    el.title += '\n' + t('In sync with {remotes}', { remotes: rs.join(', ') })
     el.append(h('span', { class: 'ref-remote' }, icon('cloud', 10), h('span', null, rs.map(remoteName).join(', '))))
     return el
   }
 
-  if (headBranch) out.push(withRemotes(pill('head current', 'current', headBranch, `${headBranch} (checked out)`), headBranch))
+  if (headBranch) out.push(withRemotes(pill('head current', 'current', headBranch, t('{branch} (checked out)', { branch: headBranch })), headBranch))
   let marked = false
   for (const r of names) {
     if (merged.has(r)) continue
-    if (r.startsWith('tag: ')) out.push(pill('tag', 'tag', r.slice(5), `Tag ${r.slice(5)}`))
-    else if (r.startsWith('refs/stash') || r === 'stash') out.push(pill('', 'stash', 'stash', 'Stash'))
+    if (r.startsWith('tag: ')) out.push(pill('tag', 'tag', r.slice(5), t('Tag {name}', { name: r.slice(5) })))
+    else if (r.startsWith('refs/stash') || r === 'stash') out.push(pill('', 'stash', 'stash', t('Stash')))
     else if (isRemote(r)) {
       if (detached && !marked) {
         // detached on a remote branch: that label is what is checked out
         marked = true
-        out.push(pill('remote head current', 'current', r, `${r} (checked out, detached HEAD)`))
-      } else out.push(pill('remote', 'globe', r, `Remote branch ${r}, not on this computer`))
+        out.push(pill('remote head current', 'current', r, t('{branch} (checked out, detached HEAD)', { branch: r })))
+      } else out.push(pill('remote', 'globe', r, t('Remote branch {branch}, not on this computer', { branch: r })))
     } else if (detached && !marked) {
       marked = true
-      out.push(withRemotes(pill('head current', 'current', r, `${r} (checked out, detached HEAD)`), r))
-    } else out.push(withRemotes(pill('', 'branch', r, `Branch ${r}`), r))
+      out.push(withRemotes(pill('head current', 'current', r, t('{branch} (checked out, detached HEAD)', { branch: r })), r))
+    } else out.push(withRemotes(pill('', 'branch', r, t('Branch {branch}', { branch: r })), r))
   }
-  if (detached && !marked) out.push(pill('head current', 'current', 'HEAD', 'Detached HEAD (checked out)'))
+  if (detached && !marked) out.push(pill('head current', 'current', 'HEAD', t('Detached HEAD (checked out)')))
   return out
 }
 
@@ -3265,7 +3319,7 @@ async function goToHead() {
     await renderView()
     row = document.querySelector(`.commit-row[data-hash="${oid}"]`)
   }
-  if (!row) return toast('The checked-out commit is not in the loaded history (try All branches).', 'error')
+  if (!row) return toast(t('The checked-out commit is not in the loaded history (try All branches).'), 'error')
   row.scrollIntoView({ block: 'center', behavior: 'smooth' })
   row.classList.add('flash')
   setTimeout(() => row.classList.remove('flash'), 1400)
@@ -3278,7 +3332,7 @@ function loadMoreSentinel() {
   const more = async () => {
     if (loadingMore) return
     loadingMore = true
-    clear(btn).append(h('span', { class: 'spinner' }), 'Loading…')
+    clear(btn).append(h('span', { class: 'spinner' }), t('Loading…'))
     try {
       await loadHistory(true)
       await renderView()
@@ -3286,7 +3340,7 @@ function loadMoreSentinel() {
       loadingMore = false
     }
   }
-  const btn = h('button', { class: 'btn sm load-more', onClick: more }, icon('down', 12), 'Load more')
+  const btn = h('button', { class: 'btn sm load-more', onClick: more }, icon('down', 12), t('Load more'))
   moreObserver?.disconnect()
   const io = (moreObserver = new IntersectionObserver((ents) => ents.some((e) => e.isIntersecting) && (io.disconnect(), more()), { root: $('#main'), rootMargin: '1500px' }))
   requestAnimationFrame(() => btn.isConnected && io.observe(btn))
@@ -3314,7 +3368,7 @@ async function viewHistory() {
     // a search through a big history can take a while: say so, and let it be stopped
     const bar = document.querySelector('#main .history-bar')
     if (v && bar && !bar.querySelector('.search-busy')) {
-      const busy = h('span', { class: 'search-busy' }, h('span', { class: 'spinner' }), 'Searching…', h('button', { class: 'btn sm', onClick: () => ((search.value = ''), runSearch('')) }, icon('x', 11), 'Stop'))
+      const busy = h('span', { class: 'search-busy' }, h('span', { class: 'spinner' }), t('Searching…'), h('button', { class: 'btn sm', onClick: () => ((search.value = ''), runSearch('')) }, icon('x', 11), t('Stop')))
       setTimeout(() => bar.isConnected && !busy.isConnected && bar.append(busy), 400)
     }
     renderView()
@@ -3324,8 +3378,8 @@ async function viewHistory() {
   const search = (searchBox ||= h('input', {
     type: 'text',
     class: 'graph-search',
-    placeholder: 'Search commits',
-    title: 'Messages, authors, changed files, hashes, branches and tags',
+    placeholder: t('Search commits'),
+    title: t('Messages, authors, changed files, hashes, branches and tags'),
     value: H.search,
     onInput: (e) => {
       clearTimeout(typing)
@@ -3346,8 +3400,8 @@ async function viewHistory() {
   const seg = h(
     'div',
     { class: 'segmented' },
-    h('button', { class: H.all ? '' : 'on', title: 'Only the history of the branch you are on', onClick: () => setAll(false) }, 'This branch'),
-    h('button', { class: H.all ? 'on' : '', title: 'Every branch, tag and remote', onClick: () => setAll(true) }, 'All branches')
+    h('button', { class: H.all ? '' : 'on', title: t('Only the history of the branch you are on'), onClick: () => setAll(false) }, t('This branch')),
+    h('button', { class: H.all ? 'on' : '', title: t('Every branch, tag and remote'), onClick: () => setAll(true) }, t('All branches'))
   )
   function setAll(v) {
     H.all = v
@@ -3355,10 +3409,10 @@ async function viewHistory() {
     resetHistory()
     renderView()
   }
-  const headBtn = h('button', { class: 'btn sm', title: 'Scroll to the checked-out commit', onClick: () => goToHead() }, icon('current', 12), 'HEAD')
-  const dense = IN_TAB && iconBtn('rows', ROW_H > 28 ? 'Compact rows' : 'Comfortable rows', () => setDensity(ROW_H > 28 ? 'compact' : 'comfortable'), { class: `icon-btn density-btn ${ROW_H > 28 ? 'on' : ''}` })
+  const headBtn = h('button', { class: 'btn sm', title: t('Scroll to the checked-out commit'), onClick: () => goToHead() }, icon('current', 12), 'HEAD')
+  const dense = IN_TAB && iconBtn('rows', ROW_H > 28 ? t('Compact rows') : t('Comfortable rows'), () => setDensity(ROW_H > 28 ? 'compact' : 'comfortable'), { class: `icon-btn density-btn ${ROW_H > 28 ? 'on' : ''}` })
   // an × inside the box clears the search (Esc does too)
-  const searchWrap = h('div', { class: 'graph-search-wrap' }, liveSlot(search), H.search && iconBtn('x', 'Clear search', () => ((search.value = ''), runSearch('')), { class: 'icon-btn search-clear' }))
+  const searchWrap = h('div', { class: 'graph-search-wrap' }, liveSlot(search), H.search && iconBtn('x', t('Clear search'), () => ((search.value = ''), runSearch('')), { class: 'icon-btn search-clear' }))
   root.append(h('div', { class: 'history-bar' }, searchWrap, seg, headBtn, dense))
   if (IN_TAB) root.append(h('div', { class: 'date-float-wrap' }, h('div', { class: 'date-float', id: 'dateFloat' })))
 
@@ -3368,16 +3422,16 @@ async function viewHistory() {
         'div',
         { class: 'empty' },
         icon('history', 28),
-        h('div', null, H.search ? `Nothing matches “${H.search}”` : 'No commits yet'),
-        H.search && h('div', { class: 'dim' }, 'Searched messages, authors, changed files, hashes, branches and tags' + (H.all ? '.' : ' on this branch.')),
+        h('div', null, H.search ? t('Nothing matches “{query}”', { query: H.search }) : t('No commits yet')),
+        H.search && h('div', { class: 'dim' }, H.all ? t('Searched messages, authors, changed files, hashes, branches and tags.') : t('Searched messages, authors, changed files, hashes, branches and tags on this branch.')),
         H.search &&
           h(
             'div',
             { class: 'empty-actions' },
-            !H.all && h('button', { class: 'btn sm primary', onClick: () => setAll(true) }, icon('search', 12), 'Search all branches'),
-            h('button', { class: 'btn sm', onClick: () => ((search.value = ''), runSearch('')) }, icon('x', 12), 'Clear search')
+            !H.all && h('button', { class: 'btn sm primary', onClick: () => setAll(true) }, icon('search', 12), t('Search all branches')),
+            h('button', { class: 'btn sm', onClick: () => ((search.value = ''), runSearch('')) }, icon('x', 12), t('Clear search'))
           ),
-        !H.search && h('div', { class: 'empty-actions' }, h('button', { class: 'btn sm primary', onClick: () => setTab('changes') }, icon('commit', 12), 'Make the first commit'))
+        !H.search && h('div', { class: 'empty-actions' }, h('button', { class: 'btn sm primary', onClick: () => setTab('changes') }, icon('commit', 12), t('Make the first commit')))
       )
     )
     return root
@@ -3410,15 +3464,15 @@ async function viewHistory() {
     if (!H.search || !c.match?.length) return null
     if (hasHit(c.subject, H.search) || hasHit(c.author, H.search)) return null // already marked in the row
     const why = c.match.includes('body')
-      ? 'in description'
+      ? t('in description')
       : c.match.includes('file')
-        ? `file: ${c.matchFile}`
+        ? t('file: {file}', { file: c.matchFile })
         : c.match.includes('ref')
-          ? `${/^tag: |^v?\d/.test(c.matchRef || '') ? 'tag' : 'branch'}: ${c.matchRef}`
+          ? (/^tag: |^v?\d/.test(c.matchRef || '') ? t('tag: {ref}', { ref: c.matchRef }) : t('branch: {ref}', { ref: c.matchRef }))
           : c.match.includes('hash')
-            ? 'commit hash'
+            ? t('commit hash')
             : c.match.includes('author')
-              ? 'author email'
+              ? t('author email')
               : ''
     return why ? h('span', { class: 'match-note', title: why }, why) : null
   }
@@ -3431,7 +3485,7 @@ async function viewHistory() {
           ? [
               h('div', { class: 'commit-text' }, h('div', { class: 'commit-subject' }, refPills(c.refs, rows && rows[i] ? rows[i].color : null), h('span', { class: 's', title: c.subject }, marked(c.subject, H.search)), matchNote(c))),
               h('div', { class: 'col-author ellipsis', title: c.email }, marked(c.author, H.search)),
-              h('div', { class: 'col-date', title: fullDate(c.time) }, new Date(c.time * 1000).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })),
+              h('div', { class: 'col-date', title: fullDate(c.time) }, new Date(c.time * 1000).toLocaleString(LANG, { dateStyle: 'medium', timeStyle: 'short' })),
               h('div', { class: 'col-hash mono' }, H.search && c.hash.toLowerCase().startsWith(H.search.toLowerCase()) ? marked(c.hash.slice(0, Math.max(7, H.search.length)), H.search) : c.hash.slice(0, 7)),
               rowActions(c)
             ]
@@ -3508,8 +3562,8 @@ function inlineDetail(c) {
       { class: 'inline-head' },
       h('span', { class: 'mono dim' }, c.hash.slice(0, 7)),
       h('strong', { class: 'grow ellipsis', title: c.subject }, c.subject),
-      iconBtn('open', 'Open in a side sheet', () => openCommit(c.hash)),
-      iconBtn('x', 'Close', close)
+      iconBtn('open', t('Open in a side sheet'), () => openCommit(c.hash)),
+      iconBtn('x', t('Close'), close)
     ),
     body
   )
@@ -3535,28 +3589,28 @@ function commitBody(c, { inline = false } = {}) {
       h(
         'dl',
         { class: 'kv' },
-        h('dt', null, 'Author'),
+        h('dt', null, t('Author')),
         h('dd', { title: c.email }, `${c.author}`),
-        h('dt', null, 'Date'),
+        h('dt', null, t('Date')),
         h('dd', null, fullDate(c.time)),
-        c.committer !== c.author && [h('dt', null, 'Committer'), h('dd', null, c.committer)],
-        h('dt', null, 'Commit'),
+        c.committer !== c.author && [h('dt', null, t('Committer')), h('dd', null, c.committer)],
+        h('dt', null, t('Commit')),
         h('dd', { class: 'mono' }, c.hash),
-        c.parents.length ? [h('dt', null, c.parents.length > 1 ? 'Parents' : 'Parent'), h('dd', { class: 'mono' }, c.parents.map((p) => p.slice(0, 7)).join(' '))] : null
+        c.parents.length ? [h('dt', null, c.parents.length > 1 ? t('Parents') : t('Parent')), h('dd', { class: 'mono' }, c.parents.map((p) => p.slice(0, 7)).join(' '))] : null
       ),
       h(
         'div',
         { class: 'actions-wrap' },
-        h('button', { class: 'btn sm', onClick: () => checkoutCommit(c.hash) }, icon('commit', 12), 'Checkout'),
-        h('button', { class: 'btn sm', onClick: () => newBranch(c.hash) }, icon('branch', 12), 'Branch'),
-        h('button', { class: 'btn sm ai-gen', title: 'AI explains what this commit changes and why', onClick: () => explainSheet({ hash: c.hash, subject: (c.message || '').split('\n')[0] }) }, icon('wand', 12), 'Explain'),
+        h('button', { class: 'btn sm', onClick: () => checkoutCommit(c.hash) }, icon('commit', 12), t('Checkout')),
+        h('button', { class: 'btn sm', onClick: () => newBranch(c.hash) }, icon('branch', 12), t('Branch')),
+        h('button', { class: 'btn sm ai-gen', title: t('AI explains what this commit changes and why'), onClick: () => explainSheet({ hash: c.hash, subject: (c.message || '').split('\n')[0] }) }, icon('wand', 12), t('Explain')),
         // a branch of this commit that is not the one you are on: merge it in one click
         (() => {
           const cur = state.status?.branch
           const other = (c.refs || []).map((r) => r.replace(/^HEAD -> /, '')).find((r) => r !== 'HEAD' && !r.startsWith('tag: ') && state.localNames?.has(r) && r !== cur)
-          return cur && other && c.hash !== state.status?.oid ? h('button', { class: 'btn sm', title: `Merge ${other} into ${cur}, the branch you are on`, onClick: () => mergeRef(other) }, icon('merge', 12), `Merge ${nm(other, 18)} → ${nm(cur, 18)}`) : null
+          return cur && other && c.hash !== state.status?.oid ? h('button', { class: 'btn sm', title: t('Merge {branch} into {current}, the branch you are on', { branch: other, current: cur }), onClick: () => mergeRef(other) }, icon('merge', 12), t('Merge {branch} → {current}', { branch: nm(other, 18), current: nm(cur, 18) })) : null
         })(),
-        h('button', { class: 'btn sm', onClick: (e) => commitMenu(e.currentTarget, c) }, icon('more', 12), 'More')
+        h('button', { class: 'btn sm', onClick: (e) => commitMenu(e.currentTarget, c) }, icon('more', 12), t('More'))
       )
     )
   )
@@ -3565,7 +3619,7 @@ function commitBody(c, { inline = false } = {}) {
   const filesBox = inline ? h('div', { class: 'if-scroll' }) : outer
   if (inline) outer.append(filesBox)
   body.append(outer)
-  filesBox.append(h('div', { class: 'section-head' }, 'Files', h('span', { class: 'count' }, c.files.length), c.parents.length > 1 && h('span', { class: 'dim', style: { textTransform: 'none', fontWeight: 400 } }, `vs first parent ${c.parents[0].slice(0, 7)}`)))
+  filesBox.append(h('div', { class: 'section-head' }, t('Files'), h('span', { class: 'count' }, c.files.length), c.parents.length > 1 && h('span', { class: 'dim', style: { textTransform: 'none', fontWeight: 400 } }, t('vs first parent {hash}', { hash: c.parents[0].slice(0, 7) }))))
   for (const f of c.files) {
     filesBox.append(
       h(
@@ -3574,11 +3628,11 @@ function commitBody(c, { inline = false } = {}) {
         h('span', { class: `status-letter s-${f.status}` }, f.status),
         h('span', { class: 'file-name' }, basename(f.path)),
         h('span', { class: 'file-dir grow' }, dirname(f.path)),
-        f.add != null && h('span', { class: 'stat' }, f.add === '-' ? 'bin' : [h('span', { class: 'a' }, `+${f.add}`), ' ', h('span', { class: 'd' }, `-${f.del}`)])
+        f.add != null && h('span', { class: 'stat' }, f.add === '-' ? t('bin') : [h('span', { class: 'a' }, `+${f.add}`), ' ', h('span', { class: 'd' }, `-${f.del}`)])
       )
     )
   }
-  if (!c.files.length) filesBox.append(h('div', { class: 'dim', style: { padding: '4px 10px' } }, 'No file changes'))
+  if (!c.files.length) filesBox.append(h('div', { class: 'dim', style: { padding: '4px 10px' } }, t('No file changes')))
   return body
 }
 
@@ -3629,102 +3683,102 @@ function commitMenu(anchor, c, clicked) {
   // Everyday actions on top; everything else in one "More" submenu, so the menu reads at a glance.
   const branchItems = [
     ...local.map((b) => ({
-      label: `Branch ${b}`,
+      label: t('Branch {branch}', { branch: b }),
       icon: 'branch',
       items: [
-        b !== cur && { label: 'Checkout', icon: 'right', onClick: () => checkout(b) },
-        { label: 'Push', icon: 'push', onClick: () => run('push', b === cur ? {} : { branch: b }, { success: `Pushed ${b}` }) },
-        { label: 'Rename…', icon: 'edit', onClick: () => renameBranch(b) },
-        { label: 'Show only this branch', icon: 'history', onClick: () => showBranchLog(b) },
-        b !== cur && cur && { label: mergeLabel(b, cur), full: `Merge ${b} → ${cur}`, icon: 'merge', onClick: () => mergeRef(b) },
+        b !== cur && { label: t('Checkout'), icon: 'right', onClick: () => checkout(b) },
+        { label: t('Push'), icon: 'push', onClick: () => run('push', b === cur ? {} : { branch: b }, { success: t('Pushed {ref}', { ref: b }) }) },
+        { label: t('Rename…'), icon: 'edit', onClick: () => renameBranch(b) },
+        { label: t('Show only this branch'), icon: 'history', onClick: () => showBranchLog(b) },
+        b !== cur && cur && { label: mergeLabel(b, cur), full: t('Merge {branch} → {current}', { branch: b, current: cur }), icon: 'merge', onClick: () => mergeRef(b) },
         ...(b !== cur ? withAiReview(mrBoth(b, cur)) : []),
-        b !== cur && { label: 'Delete…', icon: 'trash', danger: true, onClick: () => deleteBranch(b) }
+        b !== cur && { label: t('Delete…'), icon: 'trash', danger: true, onClick: () => deleteBranch(b) }
       ]
     })),
-    ...tags.map((t) => ({
-      label: `Tag ${t}`,
+    ...tags.map((tg) => ({
+      label: t('Tag {name}', { name: tg }),
       icon: 'tag',
       items: [
-        cur && { label: mergeLabel(t, cur), full: `Merge tag ${t} → ${cur}`, icon: 'merge', onClick: () => mergeRef(t) },
-        { label: 'Push tag', icon: 'push', onClick: () => run('tagPush', { name: t }, { success: `Pushed ${t}` }) },
-        { label: 'Delete (local)…', icon: 'trash', danger: true, onClick: async () => (await confirmBox(`Delete tag ${t}?`, 'Only the local tag is deleted.', 'Delete', true)) && run('tagDelete', { name: t }) }
+        cur && { label: mergeLabel(tg, cur), full: t('Merge tag {tag} → {current}', { tag: tg, current: cur }), icon: 'merge', onClick: () => mergeRef(tg) },
+        { label: t('Push tag'), icon: 'push', onClick: () => run('tagPush', { name: tg }, { success: t('Pushed {ref}', { ref: tg }) }) },
+        { label: t('Delete (local)…'), icon: 'trash', danger: true, onClick: async () => (await confirmBox(t('Delete tag {tag}?', { tag: tg }), t('Only the local tag is deleted.'), t('Delete'), true)) && run('tagDelete', { name: tg }) }
       ]
     }))
   ]
   // What can be merged from here: the label right-clicked, else every branch and tag at this commit.
   const pickRef = clicked?.name && clicked.name !== cur ? clicked.name : null
   const mergeables = [...local.filter((b) => b !== cur), ...remote.filter((r) => !r.endsWith('/HEAD')), ...tags]
-  const mergeOne = (ref) => ({ label: mergeLabel(ref, cur), full: `Merge ${ref} → ${cur}`, icon: 'merge', onClick: () => mergeRef(ref) })
+  const mergeOne = (ref) => ({ label: mergeLabel(ref, cur), full: t('Merge {branch} → {current}', { branch: ref, current: cur }), icon: 'merge', onClick: () => mergeRef(ref) })
   const mergeItem =
     mergeables.length > 1
-      ? { label: `Merge into ${nm(cur)}`, icon: 'merge', items: [...mergeables.map(mergeOne), { label: `This commit (${short}) → ${nm(cur)}`, icon: 'commit', onClick: () => mergeRef(c.hash) }] }
+      ? { label: t('Merge into {current}', { current: nm(cur) }), icon: 'merge', items: [...mergeables.map(mergeOne), { label: t('This commit ({hash}) → {current}', { hash: short, current: nm(cur) }), icon: 'commit', onClick: () => mergeRef(c.hash) }] }
       : mergeOne(mergeables[0] || c.hash)
   menu(anchor, [
-    { header: pickRef ? `${clicked.kind === 'tag' ? 'Tag' : clicked.kind === 'remote' ? 'Remote branch' : 'Branch'} ${pickRef}` : `${short} · ${(c.subject || c.message || '').split('\n')[0].slice(0, 48)}` },
+    { header: pickRef ? (clicked.kind === 'tag' ? t('Tag {name}', { name: pickRef }) : clicked.kind === 'remote' ? t('Remote branch {name}', { name: pickRef }) : t('Branch {name}', { name: pickRef })) : `${short} · ${(c.subject || c.message || '').split('\n')[0].slice(0, 48)}` },
     pickRef && cur && mergeOne(pickRef),
     pickRef && '-',
     {
-      label: 'Checkout',
+      label: t('Checkout'),
       icon: 'right',
       items: [
-        ...local.filter((b) => b !== cur).map((b) => ({ label: `Branch ${b}`, icon: 'branch', onClick: () => checkout(b) })),
-        ...remote.map((b) => ({ label: state.localNames?.has(b.replace(/^[^/]+\//, '')) ? `Remote ${b}…` : `Remote ${b}`, icon: 'globe', onClick: () => checkout(b, { track: true }) })),
-        { label: 'This commit (detached HEAD)', icon: 'commit', onClick: () => checkoutCommit(c.hash) }
+        ...local.filter((b) => b !== cur).map((b) => ({ label: t('Branch {branch}', { branch: b }), icon: 'branch', onClick: () => checkout(b) })),
+        ...remote.map((b) => ({ label: state.localNames?.has(b.replace(/^[^/]+\//, '')) ? t('Remote {branch}…', { branch: b }) : t('Remote {branch}', { branch: b }), icon: 'globe', onClick: () => checkout(b, { track: true }) })),
+        { label: t('This commit (detached HEAD)'), icon: 'commit', onClick: () => checkoutCommit(c.hash) }
       ]
     },
-    ...local.map((b) => ({ label: b === cur && state.status?.ahead ? `Push ${b} (${state.status.ahead})` : `Push ${b}`, icon: 'push', onClick: () => run('push', b === cur ? {} : { branch: b }, { success: `Pushed ${b}` }) })),
-    !local.length && cur && cur !== 'HEAD' && state.status?.ahead > 0 && { label: `Push ${cur} up to here`, icon: 'push', hint: short, onClick: () => run('push', { branch: cur, hash: c.hash }, { success: `Pushed ${cur} up to ${short}` }) },
-    { label: 'Create branch here…', icon: 'plus', onClick: () => newBranch(c.hash) },
-    { label: 'Create tag here…', icon: 'tag', onClick: () => newTag(c.hash) },
-    { label: 'New worktree here…', icon: 'worktree', onClick: () => addWorktree({ base: c.hash }) },
+    ...local.map((b) => ({ label: b === cur && state.status?.ahead ? t('Push {branch} ({n})', { branch: b, n: state.status.ahead }) : t('Push {branch}', { branch: b }), icon: 'push', onClick: () => run('push', b === cur ? {} : { branch: b }, { success: t('Pushed {ref}', { ref: b }) }) })),
+    !local.length && cur && cur !== 'HEAD' && state.status?.ahead > 0 && { label: t('Push {branch} up to here', { branch: cur }), icon: 'push', hint: short, onClick: () => run('push', { branch: cur, hash: c.hash }, { success: t('Pushed {branch} up to {hash}', { branch: cur, hash: short }) }) },
+    { label: t('Create branch here…'), icon: 'plus', onClick: () => newBranch(c.hash) },
+    { label: t('Create tag here…'), icon: 'tag', onClick: () => newTag(c.hash) },
+    { label: t('New worktree here…'), icon: 'worktree', onClick: () => addWorktree({ base: c.hash }) },
     '-',
     !pickRef && !isHead && cur && mergeItem,
     ...withAiReview(mrItem(local, remote, cur)),
-    !isHead && { label: pickRef ? `Rebase ${nm(cur)} onto ${nm(pickRef)}…` : `Rebase ${cur} onto this…`, icon: 'merge', onClick: () => rebaseOnto(pickRef || local[0] || c.hash) },
-    !isHead && { label: 'Cherry-pick', icon: 'commit', onClick: () => run('cherryPick', { hash: c.hash, mainline: isMerge }, { success: 'Cherry-picked' }) },
-    { label: 'Revert…', icon: 'undo', onClick: async () => (await confirmBox(`Revert ${short}?`, 'A new commit that undoes it will be created.', 'Revert')) && run('revert', { hash: c.hash, mainline: isMerge }, { success: 'Reverted' }) },
-    !isHead && { label: `Reset ${cur} to here…`, icon: 'undo', onClick: () => resetTo(c.hash) },
+    !isHead && { label: pickRef ? t('Rebase {branch} onto {onto}…', { branch: nm(cur), onto: nm(pickRef) }) : t('Rebase {branch} onto this…', { branch: cur }), icon: 'merge', onClick: () => rebaseOnto(pickRef || local[0] || c.hash) },
+    !isHead && { label: t('Cherry-pick'), icon: 'commit', onClick: () => run('cherryPick', { hash: c.hash, mainline: isMerge }, { success: t('Cherry-picked') }) },
+    { label: t('Revert…'), icon: 'undo', onClick: async () => (await confirmBox(t('Revert {hash}?', { hash: short }), t('A new commit that undoes it will be created.'), t('Revert'))) && run('revert', { hash: c.hash, mainline: isMerge }, { success: t('Reverted') }) },
+    !isHead && { label: t('Reset {branch} to here…', { branch: cur }), icon: 'undo', onClick: () => resetTo(c.hash) },
     branchItems.length && '-',
-    branchItems.length === 1 ? branchItems[0] : branchItems.length && { label: 'Branches and tags here', icon: 'branch', items: branchItems },
+    branchItems.length === 1 ? branchItems[0] : branchItems.length && { label: t('Branches and tags here'), icon: 'branch', items: branchItems },
     '-',
-    { label: 'Pipeline', icon: 'refresh', onClick: () => openPipelines({ sha: c.hash }) },
-    { label: 'Compare with HEAD', icon: 'compare', onClick: () => compareSheet(c.hash, 'HEAD') },
-    isMerge && { label: 'Compare with first parent', icon: 'compare', onClick: () => compareSheet(c.parents[0], c.hash) },
+    { label: t('Pipeline'), icon: 'refresh', onClick: () => openPipelines({ sha: c.hash }) },
+    { label: t('Compare with HEAD'), icon: 'compare', onClick: () => compareSheet(c.hash, 'HEAD') },
+    isMerge && { label: t('Compare with first parent'), icon: 'compare', onClick: () => compareSheet(c.parents[0], c.hash) },
     {
-      label: 'Copy',
+      label: t('Copy'),
       icon: 'copy',
       items: [
-        { label: 'Full hash', icon: 'copy', hint: short, onClick: () => copy(c.hash) },
-        { label: 'Short hash', icon: 'copy', onClick: () => copy(short) },
-        { label: 'Message', icon: 'copy', onClick: () => copy(c.message || c.subject || '') },
-        { label: 'Subject', icon: 'copy', onClick: () => copy((c.subject || c.message || '').split('\n')[0]) },
-        c.author && { label: 'Author', icon: 'copy', onClick: () => copy(c.email ? `${c.author} <${c.email}>` : c.author) },
-        date && { label: 'Date', icon: 'copy', onClick: () => copy(date) },
-        ...branches.map((b) => ({ label: `Branch name ${b}`, icon: 'copy', onClick: () => copy(b) })),
-        ...tags.map((t) => ({ label: `Tag name ${t}`, icon: 'copy', onClick: () => copy(t) }))
+        { label: t('Full hash'), icon: 'copy', hint: short, onClick: () => copy(c.hash) },
+        { label: t('Short hash'), icon: 'copy', onClick: () => copy(short) },
+        { label: t('Message'), icon: 'copy', onClick: () => copy(c.message || c.subject || '') },
+        { label: t('Subject'), icon: 'copy', onClick: () => copy((c.subject || c.message || '').split('\n')[0]) },
+        c.author && { label: t('Author'), icon: 'copy', onClick: () => copy(c.email ? `${c.author} <${c.email}>` : c.author) },
+        date && { label: t('Date'), icon: 'copy', onClick: () => copy(date) },
+        ...branches.map((b) => ({ label: t('Branch name {branch}', { branch: b }), icon: 'copy', onClick: () => copy(b) })),
+        ...tags.map((tg) => ({ label: t('Tag name {tag}', { tag: tg }), icon: 'copy', onClick: () => copy(tg) }))
       ]
     },
     {
-      label: 'More',
+      label: t('More'),
       icon: 'more',
       items: [
-        !isHead && { label: 'Interactive rebase from here…', icon: 'layers', onClick: () => interactiveRebase(c.hash) },
-        isHead && { label: 'Reword message…', icon: 'edit', onClick: () => rewordLast(c) },
-        !isHead && { label: 'Squash later commits into one…', icon: 'layers', onClick: () => squashSince(c.hash) },
-        { label: 'Create fixup! commit of staged changes', icon: 'commit', disabled: !staged, onClick: () => run('fixupCommit', { hash: c.hash, kind: 'fixup' }, { success: `fixup! commit for ${short}` }) },
-        !isHead && { label: 'Cherry-pick without committing', icon: 'commit', onClick: () => run('cherryPick', { hash: c.hash, mainline: isMerge, noCommit: true }, { success: 'Changes applied; review and commit' }) },
-        { label: 'Revert without committing', icon: 'undo', onClick: () => run('revert', { hash: c.hash, mainline: isMerge, noCommit: true }, { success: 'Undo applied; review and commit' }) },
+        !isHead && { label: t('Interactive rebase from here…'), icon: 'layers', onClick: () => interactiveRebase(c.hash) },
+        isHead && { label: t('Reword message…'), icon: 'edit', onClick: () => rewordLast(c) },
+        !isHead && { label: t('Squash later commits into one…'), icon: 'layers', onClick: () => squashSince(c.hash) },
+        { label: t('Create fixup! commit of staged changes'), icon: 'commit', disabled: !staged, onClick: () => run('fixupCommit', { hash: c.hash, kind: 'fixup' }, { success: t('fixup! commit for {hash}', { hash: short }) }) },
+        !isHead && { label: t('Cherry-pick without committing'), icon: 'commit', onClick: () => run('cherryPick', { hash: c.hash, mainline: isMerge, noCommit: true }, { success: t('Changes applied; review and commit') }) },
+        { label: t('Revert without committing'), icon: 'undo', onClick: () => run('revert', { hash: c.hash, mainline: isMerge, noCommit: true }, { success: t('Undo applied; review and commit') }) },
         '-',
-        { label: 'Browse files at this commit', icon: 'folder', onClick: () => treeSheet(c.hash) },
-        { label: 'Save as patch…', icon: 'download', onClick: () => savePatch(c) },
+        { label: t('Browse files at this commit'), icon: 'folder', onClick: () => treeSheet(c.hash) },
+        { label: t('Save as patch…'), icon: 'download', onClick: () => savePatch(c) },
         bis
-          ? { label: 'Bisect', icon: 'search', items: [
-              { label: 'Mark good', icon: 'check', onClick: () => run('bisect', { action: 'good', rev: c.hash }, { success: 'Marked good' }) },
-              { label: 'Mark bad', icon: 'x', onClick: () => run('bisect', { action: 'bad', rev: c.hash }, { success: 'Marked bad' }) },
-              { label: 'Skip', icon: 'right', onClick: () => run('bisect', { action: 'skip', rev: c.hash }, { success: 'Skipped' }) },
-              { label: 'Stop bisect', icon: 'x', onClick: () => run('bisect', { action: 'reset' }, { success: 'Bisect stopped' }) }
+          ? { label: t('Bisect'), icon: 'search', items: [
+              { label: t('Mark good'), icon: 'check', onClick: () => run('bisect', { action: 'good', rev: c.hash }, { success: t('Marked good') }) },
+              { label: t('Mark bad'), icon: 'x', onClick: () => run('bisect', { action: 'bad', rev: c.hash }, { success: t('Marked bad') }) },
+              { label: t('Skip'), icon: 'right', onClick: () => run('bisect', { action: 'skip', rev: c.hash }, { success: t('Skipped') }) },
+              { label: t('Stop bisect'), icon: 'x', onClick: () => run('bisect', { action: 'reset' }, { success: t('Bisect stopped') }) }
             ] }
-          : { label: 'Start bisect (this is good, HEAD is bad)', icon: 'search', onClick: () => startBisect(c.hash) }
+          : { label: t('Start bisect (this is good, HEAD is bad)'), icon: 'search', onClick: () => startBisect(c.hash) }
       ]
     }
   ])
@@ -3732,14 +3786,14 @@ function commitMenu(anchor, c, clicked) {
 async function copy(text) {
   try {
     await navigator.clipboard.writeText(text)
-    toast('Copied')
+    toast(t('Copied'))
   } catch {
     const ta = h('textarea', { style: { position: 'fixed', opacity: 0 } }, text)
     document.body.append(ta)
     ta.select()
     document.execCommand('copy')
     ta.remove()
-    toast('Copied')
+    toast(t('Copied'))
   }
 }
 
@@ -3766,35 +3820,35 @@ async function checkoutRemoteOverLocal(remote, local) {
     if (state.tab === 'history') setTimeout(goToHead, 120)
   }
   if (!ab.behind) return afterSwitch() // local already has everything the remote has
-  if (!ab.ahead) return afterSwitch(() => run('merge', { ref: remote, ffOnly: true }, { success: `${local} is now at ${remote}`, refresh: false }))
+  if (!ab.ahead) return afterSwitch(() => run('merge', { ref: remote, ffOnly: true }, { success: t('{local} is now at {remote}', { local, remote }), refresh: false }))
   const r = await dialog({
-    title: `Check out ${remote}`,
-    message: `Your local ${local} already exists and has gone its own way: ${ab.ahead} commit${ab.ahead > 1 ? 's' : ''} only on ${local}, ${ab.behind} only on ${remote}.`,
+    title: t('Check out {remote}', { remote }),
+    message: ab.ahead > 1 ? t('Your local {local} already exists and has gone its own way: {ahead} commits only on {local}, {behind} only on {remote}.', { local, ahead: ab.ahead, behind: ab.behind, remote }) : t('Your local {local} already exists and has gone its own way: {ahead} commit only on {local}, {behind} only on {remote}.', { local, ahead: ab.ahead, behind: ab.behind, remote }),
     fields: [
       {
         key: 'how',
-        label: 'What should happen to your local branch?',
+        label: t('What should happen to your local branch?'),
         type: 'select',
         value: 'merge',
         options: [
-          ['merge', `Merge ${remote} into ${local} (keeps both)`],
-          ['rebase', `Rebase ${local} onto ${remote} (your ${ab.ahead} commits on top)`],
-          ['reset', `Reset ${local} to ${remote} (drops your ${ab.ahead} local commits)`],
-          ['detach', `Just look at ${remote} (detached, ${local} unchanged)`],
-          ['local', `Switch to ${local} as it is`]
+          ['merge', t('Merge {remote} into {local} (keeps both)', { remote, local })],
+          ['rebase', t('Rebase {local} onto {remote} (your {n} commits on top)', { local, remote, n: ab.ahead })],
+          ['reset', t('Reset {local} to {remote} (drops your {n} local commits)', { local, remote, n: ab.ahead })],
+          ['detach', t('Just look at {remote} (detached, {local} unchanged)', { remote, local })],
+          ['local', t('Switch to {local} as it is', { local })]
         ]
       }
     ],
-    ok: 'Check out'
+    ok: t('Check out')
   })
   if (!r) return
   if (r.how === 'detach') return checkout(remote, { detach: true, resolved: true })
   if (r.how === 'local') return checkout(local, { resolved: true })
-  if (r.how === 'reset' && !(await confirmBox(`Drop ${ab.ahead} local commit${ab.ahead > 1 ? 's' : ''}?`, `${local} will point at ${remote}. The dropped commits stay in the Reflog tab for a while if you need them back.`, 'Reset', true))) return
+  if (r.how === 'reset' && !(await confirmBox(ab.ahead > 1 ? t('Drop {n} local commits?', { n: ab.ahead }) : t('Drop {n} local commit?', { n: ab.ahead }), t('{local} will point at {remote}. The dropped commits stay in the Reflog tab for a while if you need them back.', { local, remote }), t('Reset'), true))) return
   const after = {
-    merge: () => run('merge', { ref: remote }, { success: `Merged ${remote} into ${local}`, refresh: false }),
-    rebase: () => run('rebase', { onto: remote }, { success: `Rebased ${local} onto ${remote}`, refresh: false }),
-    reset: () => run('reset', { hash: remote, mode: 'keep' }, { success: `${local} now matches ${remote}`, refresh: false })
+    merge: () => run('merge', { ref: remote }, { success: t('Merged {remote} into {local}', { remote, local }), refresh: false }),
+    rebase: () => run('rebase', { onto: remote }, { success: t('Rebased {local} onto {remote}', { local, remote }), refresh: false }),
+    reset: () => run('reset', { hash: remote, mode: 'keep' }, { success: t('{local} now matches {remote}', { local, remote }), refresh: false })
   }[r.how]
   return afterSwitch(after)
 }
@@ -3811,21 +3865,21 @@ function checkoutChangesDialog(label, count, { collided = false } = {}) {
   closeOverlays()
   return new Promise((resolve) => {
     const options = [
-      ['keep', "Don't change", 'Take the changes along. If they collide with the other branch you are asked again.'],
-      ['stash', 'Stash', 'Put them aside, switch, then bring them back.'],
-      ['merge', 'Merge', 'Merge them into the other branch (may leave conflicts to resolve).'],
-      ['reset', 'Reset', 'Discard them. This cannot be undone.']
+      ['keep', t("Don't change"), t('Take the changes along. If they collide with the other branch you are asked again.')],
+      ['stash', t('Stash'), t('Put them aside, switch, then bring them back.')],
+      ['merge', t('Merge'), t('Merge them into the other branch (may leave conflicts to resolve).')],
+      ['reset', t('Reset'), t('Discard them. This cannot be undone.')]
     ]
     if (collided) options.shift() // "Don't change" is what just failed
     let mode = collided ? 'stash' : 'keep'
     const clean = h('input', { type: 'checkbox' })
     const remember = h('input', { type: 'checkbox' })
-    const cleanRow = h('label', { class: 'check co-clean hidden' }, clean, 'Also delete untracked files')
+    const cleanRow = h('label', { class: 'check co-clean hidden' }, clean, t('Also delete untracked files'))
     const rows = options.map(([v, title, desc]) => {
       const radio = h('input', { type: 'radio', name: 'co-mode', value: v, checked: v === mode, onChange: () => pick(v) })
       return h('label', { class: `co-option ${v === 'reset' ? 'danger' : ''}`, 'data-mode': v }, radio, h('div', null, h('div', { class: 'co-title' }, title), h('div', { class: 'dim' }, desc)))
     })
-    const ok = h('button', { type: 'submit', class: 'btn primary' }, `Checkout ${label}`)
+    const ok = h('button', { type: 'submit', class: 'btn primary' }, t('Checkout {label}', { label }))
     function pick(v) {
       mode = v
       rows.forEach((r) => r.classList.toggle('on', r.dataset.mode === v))
@@ -3833,7 +3887,7 @@ function checkoutChangesDialog(label, count, { collided = false } = {}) {
       remember.disabled = v === 'reset'
       if (v === 'reset') remember.checked = false
       ok.className = `btn ${v === 'reset' ? 'danger solid' : 'primary'}`
-      ok.textContent = v === 'reset' ? `Reset & checkout ${label}` : `Checkout ${label}`
+      ok.textContent = v === 'reset' ? t('Reset & checkout {label}', { label }) : t('Checkout {label}', { label })
     }
     let closed = false
     const done = (val) => {
@@ -3855,12 +3909,12 @@ function checkoutChangesDialog(label, count, { collided = false } = {}) {
           done(val)
         }
       },
-      h('h3', null, `Checkout ${label}`),
-      h('p', null, collided ? `Your uncommitted changes would be overwritten by ${label}. What should happen to them?` : `You have ${count} uncommitted change${count > 1 ? 's' : ''}. What should happen to ${count > 1 ? 'them' : 'it'}?`),
+      h('h3', null, t('Checkout {label}', { label })),
+      h('p', null, collided ? t('Your uncommitted changes would be overwritten by {label}. What should happen to them?', { label }) : count > 1 ? t('You have {count} uncommitted changes. What should happen to them?', { count }) : t('You have {count} uncommitted change. What should happen to it?', { count })),
       h('div', { class: 'co-options' }, rows),
       cleanRow,
-      h('label', { class: 'check' }, remember, "Remember my choice (change it in Settings)"),
-      h('div', { class: 'buttons' }, h('button', { type: 'button', class: 'btn', onClick: () => done(null) }, 'Cancel'), ok)
+      h('label', { class: 'check' }, remember, t('Remember my choice (change it in Settings)')),
+      h('div', { class: 'buttons' }, h('button', { type: 'button', class: 'btn', onClick: () => done(null) }, t('Cancel')), ok)
     )
     pick(mode)
     const overlay = h('div', { class: 'overlay', onMousedown: (e) => e.target === overlay && done(null) }, form)
@@ -3898,12 +3952,12 @@ async function checkout(name, opts = {}) {
     if (inUse) {
       const where = inUse[1].trim()
       const r = await dialog({
-        title: `${label} is open in another worktree`,
+        title: t('{label} is open in another worktree', { label }),
         message: `${where}
 
-A branch can be checked out in only one worktree at a time.`,
-        ok: 'Open that worktree',
-        cancel: 'Cancel'
+${t('A branch can be checked out in only one worktree at a time.')}`,
+        ok: t('Open that worktree'),
+        cancel: t('Cancel')
       })
       if (r) {
         const opened = await request('worktree.open', { path: where }).catch(() => null)
@@ -3924,14 +3978,14 @@ A branch can be checked out in only one worktree at a time.`,
   setBusy(-1)
   const loc = out?.local
   const shown = loc?.name || label
-  if (out?.stashKept) toast(out.stashMessage || `Switched to ${shown}. Your changes did not apply cleanly, so they are kept in the stash.`, 'error', 9000)
-  else toast(out?.stashed ? `Switched to ${shown} with your changes` : `Switched to ${shown}`)
+  if (out?.stashKept) toast(out.stashMessage || t('Switched to {branch}. Your changes did not apply cleanly, so they are kept in the stash.', { branch: shown }), 'error', 9000)
+  else toast(out?.stashed ? t('Switched to {branch} with your changes', { branch: shown }) : t('Switched to {branch}', { branch: shown }))
   // origin/x checked out while a local x exists: we switched to the local one; offer to catch it up.
   if (loc && loc.behind > 0 && loc.ahead === 0) {
-    if (await confirmBox(`Update ${loc.name}?`, `Your local ${loc.name} is ${loc.behind} commit${loc.behind > 1 ? 's' : ''} behind ${loc.remote}. Fast-forward it?`, 'Fast-forward'))
-      await run('merge', { ref: loc.remote, ffOnly: true }, { success: `${loc.name} is up to date with ${loc.remote}` })
+    if (await confirmBox(t('Update {branch}?', { branch: loc.name }), loc.behind > 1 ? t('Your local {branch} is {n} commits behind {remote}. Fast-forward it?', { branch: loc.name, n: loc.behind, remote: loc.remote }) : t('Your local {branch} is {n} commit behind {remote}. Fast-forward it?', { branch: loc.name, n: loc.behind, remote: loc.remote }), t('Fast-forward')))
+      await run('merge', { ref: loc.remote, ffOnly: true }, { success: t('{branch} is up to date with {remote}', { branch: loc.name, remote: loc.remote }) })
   } else if (loc && loc.behind > 0)
-    toast(`Local ${loc.name} and ${loc.remote} have diverged (${loc.ahead} ahead, ${loc.behind} behind). Merge or rebase when you are ready.`, 'ok', 8000)
+    toast(t('Local {branch} and {remote} have diverged ({ahead} ahead, {behind} behind). Merge or rebase when you are ready.', { branch: loc.name, remote: loc.remote, ahead: loc.ahead, behind: loc.behind }), 'ok', 8000)
   if (opts.quietJump) return true
   state.history.stale = true
   await refreshAll()
@@ -3940,102 +3994,102 @@ A branch can be checked out in only one worktree at a time.`,
   return true
 }
 async function checkoutCommit(hash) {
-  if (!(await confirmBox('Checkout commit?', `HEAD will be detached at ${hash.slice(0, 7)}. Create a branch if you want to keep new commits.`, 'Checkout'))) return
+  if (!(await confirmBox(t('Checkout commit?'), t('HEAD will be detached at {hash}. Create a branch if you want to keep new commits.', { hash: hash.slice(0, 7) }), t('Checkout')))) return
   closeSheet()
   checkout(hash, { detach: true })
 }
 async function newBranch(start) {
   const r = await dialog({
-    title: 'New branch',
+    title: t('New branch'),
     fields: [
-      { key: 'name', label: 'Branch name', placeholder: 'feature/my-change' },
-      { key: 'start', label: 'Start from', value: start || '', placeholder: 'HEAD' },
-      { key: 'checkout', label: 'Switch to it', type: 'check', value: true }
+      { key: 'name', label: t('Branch name'), placeholder: 'feature/my-change' },
+      { key: 'start', label: t('Start from'), value: start || '', placeholder: 'HEAD' },
+      { key: 'checkout', label: t('Switch to it'), type: 'check', value: true }
     ],
-    ok: 'Create'
+    ok: t('Create')
   })
   if (!r?.name.trim()) return
   if (state.sheets.length) closeSheet()
   resetHistory()
-  run('branchCreate', { name: r.name.trim(), start: r.start.trim() || undefined, checkout: r.checkout }, { success: `Created ${r.name.trim()}` })
+  run('branchCreate', { name: r.name.trim(), start: r.start.trim() || undefined, checkout: r.checkout }, { success: t('Created {branch}', { branch: r.name.trim() }) })
 }
 async function mergeRef(ref) {
   const cur = state.status?.branch || 'HEAD'
   const name = /^[0-9a-f]{40}$/.test(ref) ? ref.slice(0, 7) : ref
   const r = await dialog({
-    title: `Merge ${name} → ${cur}`,
-    message: `Brings the changes of ${name} into ${cur}, the branch you are on. If both changed the same lines, you pick what to keep, side by side.`,
+    title: t('Merge {name} → {branch}', { name, branch: cur }),
+    message: t('Brings the changes of {name} into {branch}, the branch you are on. If both changed the same lines, you pick what to keep, side by side.', { name, branch: cur }),
     fields: [
       {
         key: 'mode',
-        label: 'How',
+        label: t('How'),
         type: 'select',
         value: 'default',
         options: [
-          ['default', 'Merge (fast-forward when possible)'],
-          ['noFf', 'Always create a merge commit'],
-          ['ffOnly', 'Fast-forward only'],
-          ['squash', 'Squash into one change (you commit it)']
+          ['default', t('Merge (fast-forward when possible)')],
+          ['noFf', t('Always create a merge commit')],
+          ['ffOnly', t('Fast-forward only')],
+          ['squash', t('Squash into one change (you commit it)')]
         ]
       },
-      { key: 'ai', label: 'Let AI resolve conflicts instead', type: 'check', value: false }
+      { key: 'ai', label: t('Let AI resolve conflicts instead'), type: 'check', value: false }
     ],
-    ok: 'Merge'
+    ok: t('Merge')
   })
   if (!r) return
   if (state.sheets.length) closeSheet()
   resetHistory()
-  const out = await run('merge', { ref, [r.mode]: r.mode !== 'default' }, { success: r.mode === 'squash' ? 'Squashed; review and commit' : `Merged ${name} into ${cur}` })
+  const out = await run('merge', { ref, [r.mode]: r.mode !== 'default' }, { success: r.mode === 'squash' ? t('Squashed; review and commit') : t('Merged {name} into {branch}', { name, branch: cur }) })
   if (out === undefined && state.status?.files.some((f) => f.conflict)) r.ai ? resolveWithAi() : openConflicts()
 }
 async function rebaseOnto(ref) {
   const cur = state.status?.branch || 'HEAD'
-  if (!(await confirmBox(`Rebase ${cur} onto ${ref}?`, 'Your commits will be replayed on top of it. Avoid this on branches others already pulled.', 'Rebase'))) return
+  if (!(await confirmBox(t('Rebase {branch} onto {ref}?', { branch: cur, ref }), t('Your commits will be replayed on top of it. Avoid this on branches others already pulled.'), t('Rebase')))) return
   resetHistory()
-  const out = await run('rebase', { onto: ref }, { success: 'Rebased' })
+  const out = await run('rebase', { onto: ref }, { success: t('Rebased') })
   if (out === undefined && state.status?.files.some((f) => f.conflict) && true) openConflicts()
 }
 async function newTag(hash) {
   const r = await dialog({
-    title: 'Create tag',
+    title: t('Create tag'),
     fields: [
-      { key: 'name', label: 'Tag name', placeholder: 'v1.0.0' },
-      { key: 'message', label: 'Message (optional, makes an annotated tag)', type: 'textarea' },
-      { key: 'push', label: 'Push the tag to the remote', type: 'check', value: store.get('tagPush', false) }
+      { key: 'name', label: t('Tag name'), placeholder: 'v1.0.0' },
+      { key: 'message', label: t('Message (optional, makes an annotated tag)'), type: 'textarea' },
+      { key: 'push', label: t('Push the tag to the remote'), type: 'check', value: store.get('tagPush', false) }
     ],
-    ok: 'Create'
+    ok: t('Create')
   })
   if (!r?.name.trim()) return
   const name = r.name.trim()
   store.set('tagPush', !!r.push)
   resetHistory()
-  const made = await run('tagCreate', { name, message: r.message.trim() || undefined, hash }, { success: r.push ? undefined : `Tagged ${name}`, refresh: !r.push })
-  if (made !== undefined && r.push) run('tagPush', { name }, { success: `Tagged and pushed ${name}` })
+  const made = await run('tagCreate', { name, message: r.message.trim() || undefined, hash }, { success: r.push ? undefined : t('Tagged {name}', { name }), refresh: !r.push })
+  if (made !== undefined && r.push) run('tagPush', { name }, { success: t('Tagged and pushed {name}', { name }) })
 }
 
 async function viewBranches() {
   const r = await call('refs')
   const root = h('div', { class: 'view', style: { paddingTop: '8px' } })
-  const filter = h('input', { type: 'text', placeholder: 'Filter branches and tags…', value: state.branchFilter || '' })
+  const filter = h('input', { type: 'text', placeholder: t('Filter branches and tags…'), value: state.branchFilter || '' })
   filter.value = state.branchFilter || ''
   const listWrap = h('div')
-  root.append(h('div', { class: 'history-bar' }, filter, iconBtn('plus', 'New branch', () => newBranch())))
+  root.append(h('div', { class: 'history-bar' }, filter, iconBtn('plus', t('New branch'), () => newBranch())))
   root.append(listWrap)
   const draw = () => {
     const q = (state.branchFilter || '').toLowerCase()
     const m = (x) => !q || x.name.toLowerCase().includes(q)
     clear(listWrap)
     const local = r.local.filter(m)
-    listWrap.append(h('div', { class: 'section-head' }, 'Local', h('span', { class: 'count' }, local.length)))
+    listWrap.append(h('div', { class: 'section-head' }, t('Local'), h('span', { class: 'count' }, local.length)))
     for (const b of local) listWrap.append(localBranchRow(b))
     const remote = r.remote.filter(m)
     if (remote.length) {
-      listWrap.append(h('div', { class: 'section-head' }, 'Remote', h('span', { class: 'count' }, remote.length)))
+      listWrap.append(h('div', { class: 'section-head' }, t('Remote'), h('span', { class: 'count' }, remote.length)))
       for (const b of remote) listWrap.append(remoteBranchRow(b, r.local))
     }
     const tags = r.tags.filter(m)
     if (tags.length) {
-      listWrap.append(h('div', { class: 'section-head' }, 'Tags', h('span', { class: 'count' }, tags.length)))
+      listWrap.append(h('div', { class: 'section-head' }, t('Tags'), h('span', { class: 'count' }, tags.length)))
       for (const t of tags) listWrap.append(tagRow(t))
     }
   }
@@ -4048,15 +4102,15 @@ async function viewBranches() {
 }
 
 function trackInfo(b) {
-  if (b.gone) return h('span', { class: 'pill', title: 'Upstream was deleted' }, 'gone')
+  if (b.gone) return h('span', { class: 'pill', title: t('Upstream was deleted') }, t('gone'))
   if (!b.upstream) return null
   if (!b.ahead && !b.behind) return null
   const div = b.ahead && b.behind
   const why = div
-    ? `${b.ahead} to push and ${b.behind} to pull: ${b.name} and ${b.upstream} have gone separate ways. Pull (merge or rebase) before pushing`
+    ? t('{ahead} to push and {behind} to pull: {branch} and {upstream} have gone separate ways. Pull (merge or rebase) before pushing', { ahead: b.ahead, behind: b.behind, branch: b.name, upstream: b.upstream })
     : b.ahead
-      ? `${b.ahead} commit${b.ahead > 1 ? 's' : ''} to push to ${b.upstream}`
-      : `${b.behind} commit${b.behind > 1 ? 's' : ''} to pull from ${b.upstream}`
+      ? b.ahead > 1 ? t('{n} commits to push to {upstream}', { n: b.ahead, upstream: b.upstream }) : t('{n} commit to push to {upstream}', { n: b.ahead, upstream: b.upstream })
+      : b.behind > 1 ? t('{n} commits to pull from {upstream}', { n: b.behind, upstream: b.upstream }) : t('{n} commit to pull from {upstream}', { n: b.behind, upstream: b.upstream })
   return h(
     'span',
     { class: `sync-ab mono ${div ? 'diverged' : ''}`, title: why },
@@ -4069,15 +4123,15 @@ function localBranchRow(b) {
   const b0 = b
   return h(
     'div',
-    { class: `item ${b.current ? 'current' : ''}`, draggable: 'true', 'data-drag-ref': b.name, 'data-drag-kind': 'branch', 'data-drop-ref': b.name, 'data-drop-kind': 'branch', title: `${b.name}${b.upstream ? ` → ${b.upstream}` : ''}\n${b.subject}\nDrag onto another branch to merge or rebase`, onDblclick: () => !b.current && checkout(b.name) },
+    { class: `item ${b.current ? 'current' : ''}`, draggable: 'true', 'data-drag-ref': b.name, 'data-drag-kind': 'branch', 'data-drop-ref': b.name, 'data-drop-kind': 'branch', title: `${b.name}${b.upstream ? ` → ${b.upstream}` : ''}\n${b.subject}\n${t('Drag onto another branch to merge or rebase')}`, onDblclick: () => !b.current && checkout(b.name) },
     b.current ? icon('check', 13) : icon('branch', 13),
     h('span', { class: 'grow ellipsis' }, b.name),
     h('span', { class: 'meta-right row' }, trackInfo(b), h('span', { class: 'dim', style: { fontSize: '11px' } }, ago(b.date))),
     h(
       'div',
       { class: 'hover-actions', onClick: (e) => e.stopPropagation() },
-      !b.current && iconBtn('right', 'Checkout', () => checkout(b.name)),
-      iconBtn('more', 'More', (e) => branchMenu(e.currentTarget))
+      !b.current && iconBtn('right', t('Checkout'), () => checkout(b.name)),
+      iconBtn('more', t('More'), (e) => branchMenu(e.currentTarget))
     )
   )
   // Built when it opens: the checked-out branch may have changed since this row was drawn.
@@ -4085,22 +4139,22 @@ function localBranchRow(b) {
     const cur = state.status?.branch
     const b = { ...b0, current: b0.name === cur }
     return menu(anchor, [
-          !b.current && { label: 'Checkout', icon: 'right', onClick: () => checkout(b.name) },
-          !b.current && cur && { label: mergeLabel(b.name, cur), full: `Merge ${b.name} → ${cur}`, icon: 'merge', onClick: () => mergeRef(b.name) },
+          !b.current && { label: t('Checkout'), icon: 'right', onClick: () => checkout(b.name) },
+          !b.current && cur && { label: mergeLabel(b.name, cur), full: t('Merge {name} → {branch}', { name: b.name, branch: cur }), icon: 'merge', onClick: () => mergeRef(b.name) },
           ...(!b.current ? withAiReview(mrBoth(b.name, cur)) : []),
-          !b.current && cur && { label: `Rebase ${cur} onto this`, icon: 'merge', onClick: () => rebaseOnto(b.name) },
-          { label: 'New branch from here…', icon: 'plus', onClick: () => newBranch(b.name) },
-          { label: 'New worktree…', icon: 'worktree', onClick: () => addWorktree({ branch: b.name }) },
-          { label: 'Show history', icon: 'history', onClick: () => showBranchLog(b.name) },
-          !b.current && { label: `Compare with ${cur || 'HEAD'}`, icon: 'compare', onClick: () => compareSheet(cur || 'HEAD', b.name) },
+          !b.current && cur && { label: t('Rebase {branch} onto this', { branch: cur }), icon: 'merge', onClick: () => rebaseOnto(b.name) },
+          { label: t('New branch from here…'), icon: 'plus', onClick: () => newBranch(b.name) },
+          { label: t('New worktree…'), icon: 'worktree', onClick: () => addWorktree({ branch: b.name }) },
+          { label: t('Show history'), icon: 'history', onClick: () => showBranchLog(b.name) },
+          !b.current && { label: t('Compare with {ref}', { ref: cur || 'HEAD' }), icon: 'compare', onClick: () => compareSheet(cur || 'HEAD', b.name) },
           '-',
-          b.current && { label: 'Push', icon: 'push', onClick: () => run('push', {}, { success: 'Pushed' }) },
-          !b.current && { label: 'Push', icon: 'push', onClick: () => run('push', { branch: b.name }, { success: `Pushed ${b.name}` }) },
-          { label: 'Set upstream…', icon: 'globe', onClick: () => setUpstream(b) },
-          { label: 'Rename…', icon: 'edit', onClick: () => renameBranch(b.name) },
-          { label: 'Copy name', icon: 'copy', onClick: () => copy(b.name) },
+          b.current && { label: t('Push'), icon: 'push', onClick: () => run('push', {}, { success: t('Pushed') }) },
+          !b.current && { label: t('Push'), icon: 'push', onClick: () => run('push', { branch: b.name }, { success: t('Pushed {name}', { name: b.name }) }) },
+          { label: t('Set upstream…'), icon: 'globe', onClick: () => setUpstream(b) },
+          { label: t('Rename…'), icon: 'edit', onClick: () => renameBranch(b.name) },
+          { label: t('Copy name'), icon: 'copy', onClick: () => copy(b.name) },
           !b.current && '-',
-          !b.current && { label: 'Delete…', icon: 'trash', danger: true, onClick: () => deleteBranch(b.name) }
+          !b.current && { label: t('Delete…'), icon: 'trash', danger: true, onClick: () => deleteBranch(b.name) }
         ])
   }
 }
@@ -4118,57 +4172,57 @@ function remoteBranchRow(b, local) {
     h(
       'div',
       { class: 'hover-actions', onClick: (e) => e.stopPropagation() },
-      iconBtn('more', 'More', (e) => {
+      iconBtn('more', t('More'), (e) => {
         const cur = curNow()
         return menu(e.currentTarget, [
           // Always go through the remote: when a local branch exists, checkout() asks how to bring it up to date.
-          { label: hasLocal ? `Checkout ${b.name}…` : `Checkout as ${short}`, icon: 'right', onClick: () => checkout(b.name, { track: true }) },
-          cur && { label: mergeLabel(b.name, cur), full: `Merge ${b.name} → ${cur}`, icon: 'merge', onClick: () => mergeRef(b.name) },
+          { label: hasLocal ? t('Checkout {name}…', { name: b.name }) : t('Checkout as {name}', { name: short }), icon: 'right', onClick: () => checkout(b.name, { track: true }) },
+          cur && { label: mergeLabel(b.name, cur), full: t('Merge {name} → {branch}', { name: b.name, branch: cur }), icon: 'merge', onClick: () => mergeRef(b.name) },
           ...withAiReview(mrBoth(b.name.replace(/^[^/]+\//, ''), cur)),
-          cur && { label: `Rebase ${cur} onto this`, icon: 'merge', onClick: () => rebaseOnto(b.name) },
-          { label: 'New branch from here…', icon: 'plus', onClick: () => newBranch(b.name) },
-          { label: 'New worktree…', icon: 'worktree', onClick: () => addWorktree({ newBranch: short, base: b.name }) },
-          { label: 'Show history', icon: 'history', onClick: () => showBranchLog(b.name) },
-          { label: `Compare with ${cur || 'HEAD'}`, icon: 'compare', onClick: () => compareSheet(cur || 'HEAD', b.name) },
+          cur && { label: t('Rebase {branch} onto this', { branch: cur }), icon: 'merge', onClick: () => rebaseOnto(b.name) },
+          { label: t('New branch from here…'), icon: 'plus', onClick: () => newBranch(b.name) },
+          { label: t('New worktree…'), icon: 'worktree', onClick: () => addWorktree({ newBranch: short, base: b.name }) },
+          { label: t('Show history'), icon: 'history', onClick: () => showBranchLog(b.name) },
+          { label: t('Compare with {ref}', { ref: cur || 'HEAD' }), icon: 'compare', onClick: () => compareSheet(cur || 'HEAD', b.name) },
           '-',
           {
-            label: `Delete from ${remote}…`,
+            label: t('Delete from {remote}…', { remote }),
             icon: 'trash',
             danger: true,
             onClick: async () =>
-              (await confirmBox(`Delete ${b.name}?`, `The branch is removed from the remote "${remote}" for everyone.`, 'Delete', true)) &&
-              run('remoteBranchDelete', { remote, name: short }, { success: `Deleted ${b.name}` })
+              (await confirmBox(t('Delete {name}?', { name: b.name }), t('The branch is removed from the remote "{remote}" for everyone.', { remote }), t('Delete'), true)) &&
+              run('remoteBranchDelete', { remote, name: short }, { success: t('Deleted {name}', { name: b.name }) })
           }
         ])
       })
     )
   )
 }
-function tagRow(t) {
+function tagRow(tag) {
   return h(
     'div',
-    { class: 'item', draggable: 'true', 'data-drag-ref': t.name, 'data-drag-kind': 'tag', title: `${t.name}\n${t.subject}` },
+    { class: 'item', draggable: 'true', 'data-drag-ref': tag.name, 'data-drag-kind': 'tag', title: `${tag.name}\n${tag.subject}` },
     icon('tag', 13),
-    h('span', { class: 'grow ellipsis' }, t.name),
-    h('span', { class: 'meta-right dim mono' }, t.hash),
+    h('span', { class: 'grow ellipsis' }, tag.name),
+    h('span', { class: 'meta-right dim mono' }, tag.hash),
     h(
       'div',
       { class: 'hover-actions', onClick: (e) => e.stopPropagation() },
-      iconBtn('more', 'More', (e) =>
+      iconBtn('more', t('More'), (e) =>
         menu(e.currentTarget, [
-          { label: 'Checkout (detached)', icon: 'right', onClick: () => checkout(t.name, { detach: true }) },
-          { label: 'New branch from tag…', icon: 'plus', onClick: () => newBranch(t.name) },
-          state.status?.branch && { label: mergeLabel(t.name, state.status.branch), full: `Merge tag ${t.name} → ${state.status.branch}`, icon: 'merge', onClick: () => mergeRef(t.name) },
-          { label: 'Push tag', icon: 'push', onClick: () => run('tagPush', { name: t.name }, { success: `Pushed ${t.name}` }) },
+          { label: t('Checkout (detached)'), icon: 'right', onClick: () => checkout(tag.name, { detach: true }) },
+          { label: t('New branch from tag…'), icon: 'plus', onClick: () => newBranch(tag.name) },
+          state.status?.branch && { label: mergeLabel(tag.name, state.status.branch), full: t('Merge tag {name} → {branch}', { name: tag.name, branch: state.status.branch }), icon: 'merge', onClick: () => mergeRef(tag.name) },
+          { label: t('Push tag'), icon: 'push', onClick: () => run('tagPush', { name: tag.name }, { success: t('Pushed {name}', { name: tag.name }) }) },
           '-',
-          { label: 'Delete (local)…', icon: 'trash', danger: true, onClick: async () => (await confirmBox(`Delete tag ${t.name}?`, 'Only the local tag is deleted.', 'Delete', true)) && run('tagDelete', { name: t.name }) }
+          { label: t('Delete (local)…'), icon: 'trash', danger: true, onClick: async () => (await confirmBox(t('Delete tag {name}?', { name: tag.name }), t('Only the local tag is deleted.'), t('Delete'), true)) && run('tagDelete', { name: tag.name }) }
         ])
       )
     )
   )
 }
 async function showBranchLog(ref) {
-  openSheet(`History · ${ref}`, h('div', { class: 'empty' }, 'Loading…'))
+  openSheet(t('History · {ref}', { ref }), h('div', { class: 'empty' }, t('Loading…')))
   let commits
   try {
     commits = await call('log', { ref, limit: 200 })
@@ -4197,24 +4251,24 @@ async function showBranchLog(ref) {
   clear(state.sheets[state.sheets.length - 1].el.querySelector('.sheet-body')).append(list)
 }
 async function renameBranch(from) {
-  const r = await dialog({ title: 'Rename branch', fields: [{ key: 'to', label: 'New name', value: from }], ok: 'Rename' })
+  const r = await dialog({ title: t('Rename branch'), fields: [{ key: 'to', label: t('New name'), value: from }], ok: t('Rename') })
   if (!r?.to.trim() || r.to.trim() === from) return
-  run('branchRename', { from, to: r.to.trim() }, { success: 'Renamed' })
+  run('branchRename', { from, to: r.to.trim() }, { success: t('Renamed') })
 }
 async function deleteBranch(name) {
   const r = await dialog({
-    title: `Delete ${name}?`,
-    fields: [{ key: 'force', label: 'Force delete even if not merged', type: 'check', value: false }],
-    ok: 'Delete',
+    title: t('Delete {name}?', { name }),
+    fields: [{ key: 'force', label: t('Force delete even if not merged'), type: 'check', value: false }],
+    ok: t('Delete'),
     danger: true
   })
   if (!r) return
-  run('branchDelete', { name, force: r.force }, { success: `Deleted ${name}` })
+  run('branchDelete', { name, force: r.force }, { success: t('Deleted {name}', { name }) })
 }
 async function setUpstream(b) {
-  const r = await dialog({ title: `Upstream for ${b.name}`, fields: [{ key: 'up', label: 'Remote branch', value: b.upstream || `origin/${b.name}` }], ok: 'Set' })
+  const r = await dialog({ title: t('Upstream for {branch}', { branch: b.name }), fields: [{ key: 'up', label: t('Remote branch'), value: b.upstream || `origin/${b.name}` }], ok: t('Set') })
   if (!r?.up.trim()) return
-  run('setUpstream', { branch: b.name, upstream: r.up.trim() }, { success: 'Upstream set' })
+  run('setUpstream', { branch: b.name, upstream: r.up.trim() }, { success: t('Upstream set') })
 }
 
 /* =========================================================================
@@ -4231,31 +4285,31 @@ async function addWorktree(pre = {}) {
   const sep = top.includes('\\') ? '\\' : '/'
   const existing = !!pre.branch
   const r = await dialog({
-    title: 'New worktree',
-    message: 'A worktree is a second checkout of this repository in its own folder, on its own branch.',
+    title: t('New worktree'),
+    message: t('A worktree is a second checkout of this repository in its own folder, on its own branch.'),
     fields: [
       {
         key: 'mode',
-        label: 'Branch',
+        label: t('Branch'),
         type: 'select',
         value: existing ? 'existing' : 'new',
         options: [
-          ['new', 'Create a new branch'],
-          ['existing', 'Use an existing branch'],
-          ['detach', 'Detached at a commit']
+          ['new', t('Create a new branch')],
+          ['existing', t('Use an existing branch')],
+          ['detach', t('Detached at a commit')]
         ]
       },
-      { key: 'name', label: 'Branch name (new) or existing branch / commit', value: pre.branch || pre.newBranch || '', placeholder: 'feature/x' },
+      { key: 'name', label: t('Branch name (new) or existing branch / commit'), value: pre.branch || pre.newBranch || '', placeholder: 'feature/x' },
       {
         key: 'base',
-        label: 'Base for a new branch',
+        label: t('Base for a new branch'),
         type: 'select',
         value: pre.base || state.status?.branch || 'HEAD',
-        options: [['HEAD', 'HEAD (current)'], ...refsList.local.map((b) => [b.name, b.name]), ...refsList.remote.map((b) => [b.name, b.name])]
+        options: [['HEAD', t('HEAD (current)')], ...refsList.local.map((b) => [b.name, b.name]), ...refsList.remote.map((b) => [b.name, b.name])]
       },
-      { key: 'path', label: 'Folder', value: '', placeholder: `${parent}${sep}${repoName}-<branch>`, hint: 'Leave empty to use the placeholder path.' }
+      { key: 'path', label: t('Folder'), value: '', placeholder: `${parent}${sep}${repoName}-<branch>`, hint: t('Leave empty to use the placeholder path.') }
     ],
-    ok: 'Create worktree'
+    ok: t('Create worktree')
   })
   if (!r?.name.trim()) return
   const name = r.name.trim()
@@ -4264,7 +4318,7 @@ async function addWorktree(pre = {}) {
   if (r.mode === 'new') Object.assign(args, { newBranch: name, base: r.base === 'HEAD' ? undefined : r.base })
   else if (r.mode === 'existing') args.branch = name
   else Object.assign(args, { detach: true, branch: name })
-  const out = await run('worktreeAdd', args, { success: `Worktree created at ${p}` })
+  const out = await run('worktreeAdd', args, { success: t('Worktree created at {path}', { path: p }) })
   if (out !== undefined && state.tab !== 'worktrees') setTab('worktrees')
 }
 
@@ -4272,17 +4326,17 @@ async function viewWorktrees() {
   const list = await call('worktrees')
   const root = h('div', { class: 'view' })
   root.append(
-    h('p', { class: 'dim tab-intro' }, 'A worktree is another folder with another branch checked out, from the same repository: work on two branches at once without stashing.'),
+    h('p', { class: 'dim tab-intro' }, t('A worktree is another folder with another branch checked out, from the same repository: work on two branches at once without stashing.')),
     h(
       'div',
       { class: 'section-head' },
-      'Worktrees',
+      t('Worktrees'),
       h('span', { class: 'count' }, list.length),
-      h('div', { class: 'actions' }, iconBtn('trash', 'Prune stale worktrees', async () => (await confirmBox('Prune stale worktrees?', 'Removes the records of worktrees whose folders no longer exist. Worktrees on disk are not touched.', 'Prune')) && run('worktreePrune', {}, { success: 'Pruned' })), iconBtn('plus', 'New worktree', () => addWorktree()))
+      h('div', { class: 'actions' }, iconBtn('trash', t('Prune stale worktrees'), async () => (await confirmBox(t('Prune stale worktrees?'), t('Removes the records of worktrees whose folders no longer exist. Worktrees on disk are not touched.'), t('Prune'))) && run('worktreePrune', {}, { success: t('Pruned') })), iconBtn('plus', t('New worktree'), () => addWorktree()))
     )
   )
   for (const w of list) {
-    const name = w.bare ? '(bare)' : w.branch || `detached @ ${(w.head || '').slice(0, 7)}`
+    const name = w.bare ? t('(bare)') : w.branch || t('detached @ {hash}', { hash: (w.head || '').slice(0, 7) })
     root.append(
       h(
         'div',
@@ -4292,10 +4346,10 @@ async function viewWorktrees() {
           { class: 'row' },
           icon(w.branch ? 'branch' : 'commit', 13),
           h('strong', { class: 'grow ellipsis', title: name }, name),
-          w.current && h('span', { class: 'pill on' }, 'here'),
-          w.main && h('span', { class: 'pill' }, 'main'),
-          w.locked && h('span', { class: 'pill', title: typeof w.locked === 'string' ? w.locked : '' }, 'locked'),
-          w.prunable && h('span', { class: 'pill', title: typeof w.prunable === 'string' ? w.prunable : '' }, 'missing')
+          w.current && h('span', { class: 'pill on' }, t('here')),
+          w.main && h('span', { class: 'pill' }, t('main')),
+          w.locked && h('span', { class: 'pill', title: typeof w.locked === 'string' ? w.locked : '' }, t('locked')),
+          w.prunable && h('span', { class: 'pill', title: typeof w.prunable === 'string' ? w.prunable : '' }, t('missing'))
         ),
         h('div', { class: 'wt-path' }, w.path),
         h(
@@ -4306,41 +4360,41 @@ async function viewWorktrees() {
               'button',
               {
                 class: 'btn sm',
-                title: 'Switch Orca to this worktree',
+                title: t('Switch Orca to this worktree'),
                 onClick: async () => {
                   const r = await request('worktree.open', { path: w.path }).catch((e) => (toast(e.message, 'error'), null))
-                  if (r && !r.opened) toast('Orca does not list this worktree as a workspace. Use "View here" instead.', 'error')
+                  if (r && !r.opened) toast(t('Orca does not list this worktree as a workspace. Use "View here" instead.'), 'error')
                 }
               },
               icon('open', 12),
-              'Open in Orca'
+              t('Open in Orca')
             ),
-          !w.current && h('button', { class: 'btn sm', title: 'Show this worktree in the panel without switching Orca', onClick: () => pinRepo(w.path) }, icon('open', 12), 'View here'),
+          !w.current && h('button', { class: 'btn sm', title: t('Show this worktree in the panel without switching Orca'), onClick: () => pinRepo(w.path) }, icon('open', 12), t('View here')),
           h('span', { class: 'grow' }),
           !w.main &&
-            iconBtn('more', 'More', (e) =>
+            iconBtn('more', t('More'), (e) =>
               menu(e.currentTarget, [
-                { label: w.locked ? 'Unlock' : 'Lock', icon: 'lock', onClick: () => run('worktreeLock', { path: w.path, unlock: !!w.locked }) },
-                { label: 'Copy path', icon: 'copy', onClick: () => copy(w.path) },
+                { label: w.locked ? t('Unlock') : t('Lock'), icon: 'lock', onClick: () => run('worktreeLock', { path: w.path, unlock: !!w.locked }) },
+                { label: t('Copy path'), icon: 'copy', onClick: () => copy(w.path) },
                 '-',
                 {
-                  label: 'Remove…',
+                  label: t('Remove…'),
                   icon: 'trash',
                   danger: true,
                   onClick: async (ev) => {
                     const r = await dialog({
-                      title: w.prunable ? 'Remove missing worktree?' : 'Remove worktree?',
+                      title: w.prunable ? t('Remove missing worktree?') : t('Remove worktree?'),
                       message: w.prunable ? `${w.path}
 
-Git no longer finds this worktree. Its record is removed; any files left in the folder stay on disk.` : w.path,
+${t('Git no longer finds this worktree. Its record is removed; any files left in the folder stay on disk.')}` : w.path,
                       fields: w.prunable
                         ? []
                         : [
-                            { key: 'force', label: w.locked ? 'Force (it is locked, and discard its uncommitted changes)' : 'Force (discard its uncommitted changes)', type: 'check', value: !!w.locked },
-                            w.branch && { key: 'deleteBranch', label: `Also delete branch ${w.branch} (only if it is merged)`, type: 'check', value: false },
-                            w.branch && { key: 'forceBranch', label: `Delete ${w.branch} even if it has unmerged commits`, type: 'check', value: false }
+                            { key: 'force', label: w.locked ? t('Force (it is locked, and discard its uncommitted changes)') : t('Force (discard its uncommitted changes)'), type: 'check', value: !!w.locked },
+                            w.branch && { key: 'deleteBranch', label: t('Also delete branch {branch} (only if it is merged)', { branch: w.branch }), type: 'check', value: false },
+                            w.branch && { key: 'forceBranch', label: t('Delete {branch} even if it has unmerged commits', { branch: w.branch }), type: 'check', value: false }
                           ].filter(Boolean),
-                      ok: 'Remove',
+                      ok: t('Remove'),
                       danger: true
                     })
                     if (!r) return
@@ -4354,9 +4408,9 @@ Git no longer finds this worktree. Its record is removed; any files left in the 
                       // Uncommitted or untracked files: say so plainly and offer to remove it anyway.
                       if (!r.force && !/still lists/.test(err.message) && /modified|untracked|use --force/i.test(err.message)) {
                         setBusy(-1)
-                        const yes = await confirmBox('This worktree has uncommitted changes', `${w.path}
+                        const yes = await confirmBox(t('This worktree has uncommitted changes'), `${w.path}
 
-Removing it deletes those changes. This cannot be undone.`, 'Remove anyway', true)
+${t('Removing it deletes those changes. This cannot be undone.')}`, t('Remove anyway'), true)
                         setBusy(1) // balanced by finally
                         if (yes) out = await call('worktreeRemove', { path: w.path, force: true, deleteBranch: r.deleteBranch || r.forceBranch, forceBranch: r.forceBranch }).catch((e2) => (toast(e2.message, 'error'), undefined))
                       } else toast(err.message, 'error')
@@ -4364,11 +4418,11 @@ Removing it deletes those changes. This cannot be undone.`, 'Remove anyway', tru
                       setBusy(-1)
                     }
                     if (out === undefined) card?.classList.remove('leaving')
-                    else if (out.alreadyGone) toast('That worktree was already removed. The list is up to date now.')
-                    else if (out.leftover) toast(`Worktree removed from Git. Some files are left in the folder:
+                    else if (out.alreadyGone) toast(t('That worktree was already removed. The list is up to date now.'))
+                    else if (out.leftover) toast(`${t('Worktree removed from Git. Some files are left in the folder:')}
 ${w.path}`, 'ok', 7000)
-                    else toast('Worktree removed')
-                    if (out?.branchKept) toast(`Branch ${w.branch} was kept: ${out.branchKept}`, 'error', 8000)
+                    else toast(t('Worktree removed'))
+                    if (out?.branchKept) toast(t('Branch {branch} was kept: {reason}', { branch: w.branch, reason: out.branchKept }), 'error', 8000)
                     if (out !== undefined) await new Promise((res) => setTimeout(res, 180)) // let the card fold away
                     // always reload the list: on failure too, so an entry removed elsewhere disappears
                     await refreshAll()
@@ -4390,7 +4444,7 @@ ${w.path}`, 'ok', 7000)
 async function viewStash() {
   const list = await call('stashList')
   const root = h('div', { class: 'view' })
-  const msg = h('input', { type: 'text', placeholder: 'Stash message (optional)' })
+  const msg = h('input', { type: 'text', placeholder: t('Stash message (optional)') })
   const untracked = h('input', { type: 'checkbox', checked: true })
   const keepIndex = h('input', { type: 'checkbox' })
   const dirty = state.status.files.length > 0
@@ -4399,26 +4453,26 @@ async function viewStash() {
       'div',
       { class: 'form stash-form' },
       msg,
-      h('div', { class: 'row', style: { gap: '12px' } }, h('label', { class: 'check' }, untracked, 'Include untracked'), h('label', { class: 'check' }, keepIndex, 'Keep staged')),
+      h('div', { class: 'row', style: { gap: '12px' } }, h('label', { class: 'check' }, untracked, t('Include untracked')), h('label', { class: 'check' }, keepIndex, t('Keep staged'))),
       h(
         'button',
         {
           class: 'btn primary',
           disabled: !dirty,
-          onClick: () => run('stashSave', { message: msg.value.trim(), untracked: untracked.checked, keepIndex: keepIndex.checked }, { success: 'Stashed' })
+          onClick: () => run('stashSave', { message: msg.value.trim(), untracked: untracked.checked, keepIndex: keepIndex.checked }, { success: t('Stashed') })
         },
         icon('stash', 13),
-        dirty ? 'Stash changes' : 'Nothing to stash'
+        dirty ? t('Stash changes') : t('Nothing to stash')
       )
     )
   )
-  root.append(h('div', { class: 'section-head' }, 'Stashes', h('span', { class: 'count' }, list.length)))
-  if (!list.length) root.append(h('div', { class: 'empty' }, icon('stash', 26), h('div', null, 'No stashes'), h('div', { class: 'dim' }, 'Stash your changes to set them aside and come back later')))
+  root.append(h('div', { class: 'section-head' }, t('Stashes'), h('span', { class: 'count' }, list.length)))
+  if (!list.length) root.append(h('div', { class: 'empty' }, icon('stash', 26), h('div', null, t('No stashes')), h('div', { class: 'dim' }, t('Stash your changes to set them aside and come back later'))))
   for (const s of list) {
     root.append(
       h(
         'div',
-        { class: 'item', title: s.subject, onClick: (e) => (root.querySelectorAll('.item.sel').forEach((x) => x.classList.remove('sel')), e.currentTarget.classList.add('sel'), showDiff(s.subject, () => call('stashShow', { ref: s.ref }), [iconBtn('check', 'Apply', () => (closeSheet(), run('stashApply', { ref: s.ref }, { success: 'Applied' })))], undefined, { old: s.ref + '^1', new: s.ref })) },
+        { class: 'item', title: s.subject, onClick: (e) => (root.querySelectorAll('.item.sel').forEach((x) => x.classList.remove('sel')), e.currentTarget.classList.add('sel'), showDiff(s.subject, () => call('stashShow', { ref: s.ref }), [iconBtn('check', t('Apply'), () => (closeSheet(), run('stashApply', { ref: s.ref }, { success: t('Applied') })))], undefined, { old: s.ref + '^1', new: s.ref })) },
         icon('stash', 13),
         h(
           'div',
@@ -4429,106 +4483,106 @@ async function viewStash() {
         h(
           'div',
           { class: 'stash-actions', onClick: (e) => e.stopPropagation() },
-          h('button', { class: 'btn sm', title: 'Apply and keep the stash', onClick: () => run('stashApply', { ref: s.ref }, { success: 'Applied' }) }, icon('check', 12), 'Apply'),
-          h('button', { class: 'btn sm', title: 'Apply and remove the stash', onClick: () => run('stashPop', { ref: s.ref }, { success: 'Popped' }) }, icon('pull', 12), 'Pop'),
-          iconBtn('trash', 'Drop', async () => (await confirmBox('Drop stash?', s.subject, 'Drop', true)) && run('stashDrop', { ref: s.ref }, { success: 'Dropped' }))
+          h('button', { class: 'btn sm', title: t('Apply and keep the stash'), onClick: () => run('stashApply', { ref: s.ref }, { success: t('Applied') }) }, icon('check', 12), t('Apply')),
+          h('button', { class: 'btn sm', title: t('Apply and remove the stash'), onClick: () => run('stashPop', { ref: s.ref }, { success: t('Popped') }) }, icon('pull', 12), t('Pop')),
+          iconBtn('trash', t('Drop'), async () => (await confirmBox(t('Drop stash?'), s.subject, t('Drop'), true)) && run('stashDrop', { ref: s.ref }, { success: t('Dropped') }))
         )
       )
     )
   }
-  return IN_TAB ? splitWrap(root, 'Select a stash to see its changes') : root
+  return IN_TAB ? splitWrap(root, t('Select a stash to see its changes')) : root
 }
 
 /* =========================================================================
    Settings: git config (global / repository) + remotes
    ========================================================================= */
 const COMMON = [
-  { group: 'Identity' },
-  { key: 'user.name', label: 'Name', placeholder: 'Jane Doe' },
-  { key: 'user.email', label: 'Email', placeholder: 'jane@example.com' },
-  { group: 'Behavior' },
+  { group: t('Identity') },
+  { key: 'user.name', label: t('Name'), placeholder: 'Jane Doe' },
+  { key: 'user.email', label: t('Email'), placeholder: 'jane@example.com' },
+  { group: t('Behavior') },
   {
     key: 'pull.rebase',
-    label: 'Pull strategy',
+    label: t('Pull strategy'),
     options: [
-      ['', 'Not set (merge)'],
-      ['false', 'Merge'],
-      ['true', 'Rebase'],
-      ['merges', 'Rebase, keep merges']
+      ['', t('Not set (merge)')],
+      ['false', t('Merge')],
+      ['true', t('Rebase')],
+      ['merges', t('Rebase, keep merges')]
     ]
   },
   {
     key: 'core.autocrlf',
-    label: 'Line endings (core.autocrlf)',
+    label: t('Line endings (core.autocrlf)'),
     options: [
-      ['', 'Not set'],
-      ['true', 'true (Windows: CRLF ↔ LF)'],
-      ['input', 'input (convert to LF on commit)'],
-      ['false', 'false (no conversion)']
+      ['', t('Not set')],
+      ['true', t('true (Windows: CRLF ↔ LF)')],
+      ['input', t('input (convert to LF on commit)')],
+      ['false', t('false (no conversion)')]
     ]
   },
-  { key: 'init.defaultBranch', label: 'Default branch for new repos', placeholder: 'main', globalOnly: true },
+  { key: 'init.defaultBranch', label: t('Default branch for new repos'), placeholder: 'main', globalOnly: true },
   {
     key: 'push.autoSetupRemote',
-    label: 'Auto set upstream on first push',
+    label: t('Auto set upstream on first push'),
     options: [
-      ['', 'Not set'],
-      ['true', 'Yes'],
-      ['false', 'No']
+      ['', t('Not set')],
+      ['true', t('Yes')],
+      ['false', t('No')]
     ]
   },
   {
     key: 'fetch.prune',
-    label: 'Prune deleted remote branches on fetch',
+    label: t('Prune deleted remote branches on fetch'),
     options: [
-      ['', 'Not set'],
-      ['true', 'Yes'],
-      ['false', 'No']
+      ['', t('Not set')],
+      ['true', t('Yes')],
+      ['false', t('No')]
     ]
   },
   {
     key: 'commit.gpgsign',
-    label: 'Sign commits',
+    label: t('Sign commits'),
     options: [
-      ['', 'Not set'],
-      ['true', 'Yes'],
-      ['false', 'No']
+      ['', t('Not set')],
+      ['true', t('Yes')],
+      ['false', t('No')]
     ]
   },
-  { key: 'core.editor', label: 'Editor', placeholder: 'code --wait' },
-  { group: 'HTTPS & credentials' },
+  { key: 'core.editor', label: t('Editor'), placeholder: 'code --wait' },
+  { group: t('HTTPS & credentials') },
   {
     key: 'credential.helper',
-    label: 'Credential helper (remembers your HTTPS login)',
+    label: t('Credential helper (remembers your HTTPS login)'),
     options: [
-      ['', 'Not set'],
-      ['manager', 'manager (Git Credential Manager, recommended)'],
-      ['store', 'store (plain-text file)'],
-      ['cache', 'cache (in memory for a while)']
+      ['', t('Not set')],
+      ['manager', t('manager (Git Credential Manager, recommended)')],
+      ['store', t('store (plain-text file)')],
+      ['cache', t('cache (in memory for a while)')]
     ]
   },
   {
     key: 'http.sslVerify',
-    label: 'Verify HTTPS certificates',
+    label: t('Verify HTTPS certificates'),
     options: [
-      ['', 'Not set (yes)'],
-      ['true', 'Yes'],
-      ['false', 'No (only for self-signed servers you trust)']
+      ['', t('Not set (yes)')],
+      ['true', t('Yes')],
+      ['false', t('No (only for self-signed servers you trust)')]
     ]
   },
   {
     key: 'http.sslBackend',
-    label: 'TLS backend',
+    label: t('TLS backend'),
     options: [
-      ['', 'Not set'],
-      ['schannel', 'schannel (Windows certificate store)'],
+      ['', t('Not set')],
+      ['schannel', t('schannel (Windows certificate store)')],
       ['openssl', 'openssl']
     ]
   },
-  { key: 'http.proxy', label: 'HTTP proxy', placeholder: 'http://proxy.example.com:8080' },
-  { key: 'https.proxy', label: 'HTTPS proxy', placeholder: 'http://proxy.example.com:8080' },
-  { key: 'http.sslCAInfo', label: 'Custom CA certificate file', placeholder: 'C:\\certs\\company-ca.pem' },
-  { key: 'http.postBuffer', label: 'Upload buffer (bytes, for large pushes)', placeholder: '524288000' }
+  { key: 'http.proxy', label: t('HTTP proxy'), placeholder: 'http://proxy.example.com:8080' },
+  { key: 'https.proxy', label: t('HTTPS proxy'), placeholder: 'http://proxy.example.com:8080' },
+  { key: 'http.sslCAInfo', label: t('Custom CA certificate file'), placeholder: 'C:\\certs\\company-ca.pem' },
+  { key: 'http.postBuffer', label: t('Upload buffer (bytes, for large pushes)'), placeholder: '524288000' }
 ]
 
 /**
@@ -4559,7 +4613,7 @@ async function identityProfiles() {
       await call('configSet', { scope, key: 'user.name', value: p.name })
       await call('configSet', { scope, key: 'user.email', value: p.email })
       if (p.signingKey) await call('configSet', { scope, key: 'user.signingkey', value: p.signingKey })
-      toast(scope === 'global' ? `${p.label || p.name} is now your global identity` : `This repository now commits as ${p.label || p.name}`)
+      toast(scope === 'global' ? t('{name} is now your global identity', { name: p.label || p.name }) : t('This repository now commits as {name}', { name: p.label || p.name }))
     } catch (e) {
       toast(e.message, 'error')
     } finally {
@@ -4572,7 +4626,7 @@ async function identityProfiles() {
     try {
       await call('configUnset', { scope: 'local', key: 'user.name' }).catch(() => {})
       await call('configUnset', { scope: 'local', key: 'user.email' }).catch(() => {})
-      toast('This repository uses the global identity again')
+      toast(t('This repository uses the global identity again'))
     } finally {
       setBusy(-1)
       renderView({ force: true })
@@ -4580,17 +4634,17 @@ async function identityProfiles() {
   }
   async function edit(p) {
     const r = await dialog({
-      title: p ? 'Edit profile' : 'New profile',
+      title: p ? t('Edit profile') : t('New profile'),
       fields: [
-        { key: 'label', label: 'Profile name (optional)', value: p?.label || '', placeholder: 'Work, Personal, Client…' },
-        { key: 'name', label: 'Name (user.name)', value: p?.name || '' },
-        { key: 'email', label: 'Email (user.email)', value: p?.email || '' },
-        { key: 'signingKey', label: 'Signing key (optional, user.signingkey)', value: p?.signingKey || '' }
+        { key: 'label', label: t('Profile name (optional)'), value: p?.label || '', placeholder: t('Work, Personal, Client…') },
+        { key: 'name', label: t('Name (user.name)'), value: p?.name || '' },
+        { key: 'email', label: t('Email (user.email)'), value: p?.email || '' },
+        { key: 'signingKey', label: t('Signing key (optional, user.signingkey)'), value: p?.signingKey || '' }
       ],
-      ok: 'Save'
+      ok: t('Save')
     })
     if (!r) return
-    if (!r.name.trim() || !/^[^\s@]+@[^\s@]+$/.test(r.email.trim())) return toast('A name and a valid email are needed', 'error')
+    if (!r.name.trim() || !/^[^\s@]+@[^\s@]+$/.test(r.email.trim())) return toast(t('A name and a valid email are needed'), 'error')
     const item = { id: p?.id || newId(), label: r.label.trim(), name: r.name.trim(), email: r.email.trim(), signingKey: r.signingKey.trim() || undefined }
     save(p ? list.map((x) => (x.id === p.id ? item : x)) : [...list, item])
   }
@@ -4606,33 +4660,33 @@ async function identityProfiles() {
       h(
         'div',
         { class: 'idp-main' },
-        h('div', { class: 'idp-title' }, h('b', null, p.label || p.name), p.label && h('span', { class: 'dim' }, p.name), isGlobal && h('span', { class: 'pill idp-global' }, 'Global'), isLocal && h('span', { class: 'pill idp-local' }, 'This repo'), inUse && state.repo && h('span', { class: 'pill idp-use' }, icon('check', 10), 'Commits use this')),
+        h('div', { class: 'idp-title' }, h('b', null, p.label || p.name), p.label && h('span', { class: 'dim' }, p.name), isGlobal && h('span', { class: 'pill idp-global' }, t('Global')), isLocal && h('span', { class: 'pill idp-local' }, t('This repo')), inUse && state.repo && h('span', { class: 'pill idp-use' }, icon('check', 10), t('Commits use this'))),
         h('div', { class: 'dim mono idp-mail' }, p.email)
       ),
       h(
         'div',
         { class: 'idp-actions' },
-        state.repo && !isLocal && h('button', { class: 'btn sm', title: 'Commit as this identity in this repository only', onClick: () => apply(p, 'local') }, icon('check', 12), 'Use for this repo'),
-        !isGlobal && h('button', { class: 'btn sm', title: 'Make this the identity for every repository', onClick: () => apply(p, 'global') }, icon('globe', 12), 'Set global'),
-        iconBtn('edit', 'Edit profile', () => edit(p)),
-        iconBtn('trash', 'Delete profile (Git settings stay as they are)', async () => (await confirmBox(`Delete profile ${p.label || p.name}?`, 'Only the saved profile is removed; your Git settings stay as they are.', 'Delete', true)) && save(list.filter((x) => x.id !== p.id)))
+        state.repo && !isLocal && h('button', { class: 'btn sm', title: t('Commit as this identity in this repository only'), onClick: () => apply(p, 'local') }, icon('check', 12), t('Use for this repo')),
+        !isGlobal && h('button', { class: 'btn sm', title: t('Make this the identity for every repository'), onClick: () => apply(p, 'global') }, icon('globe', 12), t('Set global')),
+        iconBtn('edit', t('Edit profile'), () => edit(p)),
+        iconBtn('trash', t('Delete profile (Git settings stay as they are)'), async () => (await confirmBox(t('Delete profile {name}?', { name: p.label || p.name }), t('Only the saved profile is removed; your Git settings stay as they are.'), t('Delete'), true)) && save(list.filter((x) => x.id !== p.id)))
       )
     )
   }
   return h(
     'div',
     { class: 'idp-section' },
-    h('div', { class: 'section-head' }, 'Identity profiles', h('span', { class: 'count' }, list.length), h('div', { class: 'actions' }, iconBtn('plus', 'New profile', () => edit(null)))),
+    h('div', { class: 'section-head' }, t('Identity profiles'), h('span', { class: 'count' }, list.length), h('div', { class: 'actions' }, iconBtn('plus', t('New profile'), () => edit(null)))),
     h(
       'div',
       { class: 'idp-now dim' },
       state.repo
         ? cur.local.name || cur.local.email
-          ? ['This repository commits as ', h('b', null, `${cur.local.name} <${cur.local.email}>`), ' (its own setting). ', h('button', { class: 'link-btn', onClick: useGlobalHere }, 'Use the global identity instead')]
-          : ['This repository uses the global identity ', h('b', null, cur.global.name ? `${cur.global.name} <${cur.global.email}>` : '(not set)'), '.']
-        : ['Global identity: ', h('b', null, cur.global.name ? `${cur.global.name} <${cur.global.email}>` : '(not set)')]
+          ? [t('This repository commits as '), h('b', null, `${cur.local.name} <${cur.local.email}>`), t(' (its own setting). '), h('button', { class: 'link-btn', onClick: useGlobalHere }, t('Use the global identity instead'))] // i18n: sentence split around the identity
+          : [t('This repository uses the global identity '), h('b', null, cur.global.name ? `${cur.global.name} <${cur.global.email}>` : t('(not set)')), t('.')]
+        : [t('Global identity: '), h('b', null, cur.global.name ? `${cur.global.name} <${cur.global.email}>` : t('(not set)'))]
     ),
-    list.length ? h('div', { class: 'idp-list' }, list.map(card)) : h('div', { class: 'dim idp-empty' }, 'No profiles yet. Add one with +, then switch with one click.')
+    list.length ? h('div', { class: 'idp-list' }, list.map(card)) : h('div', { class: 'dim idp-empty' }, t('No profiles yet. Add one with +, then switch with one click.'))
   )
 }
 
@@ -4655,8 +4709,8 @@ async function viewSettings() {
   const seg = h(
     'div',
     { class: 'segmented' },
-    h('button', { class: scope === 'global' ? 'on' : '', onClick: () => setScope('global') }, 'Global'),
-    h('button', { class: scope === 'local' ? 'on' : '', onClick: () => setScope('local') }, 'This repository')
+    h('button', { class: scope === 'global' ? 'on' : '', onClick: () => setScope('global') }, t('Global')),
+    h('button', { class: scope === 'local' ? 'on' : '', onClick: () => setScope('local') }, t('This repository'))
   )
   function setScope(s) {
     if (s === state.configScope) return
@@ -4673,14 +4727,14 @@ async function viewSettings() {
     h(
       'div',
       { class: 'dim', style: { padding: '4px 10px 0', fontSize: '11px' } },
-      scope === 'global' ? 'Applies to every repository for your user (~/.gitconfig).' : 'Applies only to this repository (.git/config) and overrides global values.'
+      scope === 'global' ? t('Applies to every repository for your user (~/.gitconfig).') : t('Applies only to this repository (.git/config) and overrides global values.')
     )
   )
 
   root.append(await profilesP)
 
   // identity + common options
-  if (scope !== 'global') root.append(h('div', { class: 'dim', style: { padding: '6px 16px 0', fontSize: '11.5px' } }, 'Empty fields use the global value shown in grey.'))
+  if (scope !== 'global') root.append(h('div', { class: 'dim', style: { padding: '6px 16px 0', fontSize: '11.5px' } }, t('Empty fields use the global value shown in grey.')))
   const inputs = {}
   const form = h('div', { class: 'form' })
   for (const f of COMMON) {
@@ -4694,14 +4748,14 @@ async function viewSettings() {
     let el
     if (f.options) {
       const opts = (f.options.some(([v]) => v === cur) ? f.options : [...f.options, [cur, cur]]).map(([v, l]) =>
-        v === '' && inherited != null ? ['', `Use global (${inherited})`] : [v, l]
+        v === '' && inherited != null ? ['', t('Use global ({value})', { value: inherited })] : [v, l]
       )
       el = h('select', null, opts.map(([v, l]) => h('option', { value: v, selected: v === cur }, l)))
     } else
       el = h('input', {
         type: 'text',
         value: cur,
-        placeholder: inherited != null ? `${inherited}  (global)` : f.placeholder || '',
+        placeholder: inherited != null ? t('{value}  (global)', { value: inherited }) : f.placeholder || '',
         spellcheck: 'false'
       })
     el.value = cur
@@ -4712,7 +4766,7 @@ async function viewSettings() {
     h(
       'div',
       { class: 'row cfg-save' },
-      h('span', { class: 'dim cfg-save-note' }, scope === 'global' ? 'Saves to your global git config' : 'Saves to this repository\'s .git/config'),
+      h('span', { class: 'dim cfg-save-note' }, scope === 'global' ? t('Saves to your global git config') : t('Saves to this repository\'s .git/config')),
       h('span', { class: 'grow' }),
       h(
         'button',
@@ -4727,7 +4781,7 @@ async function viewSettings() {
                 if (v === '') await call('configUnset', { scope, key })
                 else await call('configSet', { scope, key, value: v })
               }
-              toast(scope === 'global' ? 'Global config saved' : 'Repository config saved')
+              toast(scope === 'global' ? t('Global config saved') : t('Repository config saved'))
             } catch (e) {
               toast(e.message, 'error')
             } finally {
@@ -4736,7 +4790,7 @@ async function viewSettings() {
             }
           }
         },
-        'Save'
+        t('Save')
       )
     )
   )
@@ -4745,8 +4799,8 @@ async function viewSettings() {
   // remotes
   if (scope === 'local') {
     const remotes = await (remotesP || call('remotes').catch(() => []))
-    root.append(h('div', { class: 'section-head' }, 'Remotes', h('span', { class: 'count' }, remotes.length), h('div', { class: 'actions' }, iconBtn('plus', 'Add remote', addRemote))))
-    if (!remotes.length) root.append(h('div', { class: 'dim', style: { padding: '2px 10px 8px', fontSize: '11.5px' } }, 'No remotes yet.'))
+    root.append(h('div', { class: 'section-head' }, t('Remotes'), h('span', { class: 'count' }, remotes.length), h('div', { class: 'actions' }, iconBtn('plus', t('Add remote'), addRemote))))
+    if (!remotes.length) root.append(h('div', { class: 'dim', style: { padding: '2px 10px 8px', fontSize: '11.5px' } }, t('No remotes yet.')))
     for (const r of remotes)
       root.append(
         h(
@@ -4757,17 +4811,17 @@ async function viewSettings() {
             'div',
             { class: 'row', style: { gap: 0 } },
             /^https?:\/\//.test(r.fetch) || /^git@|^ssh:\/\//.test(r.fetch)
-              ? iconBtn('globe', /^https?:/.test(r.fetch) ? 'Switch to SSH' : 'Switch to HTTPS', async () => {
+              ? iconBtn('globe', /^https?:/.test(r.fetch) ? t('Switch to SSH') : t('Switch to HTTPS'), async () => {
                   const url = swapProtocol(r.fetch)
-                  if (url && (await confirmBox(`Use ${/^https?:/.test(url) ? 'HTTPS' : 'SSH'} for ${r.name}?`, url, 'Switch')))
-                    run('remoteSetUrl', { name: r.name, url }, { success: 'Remote updated' })
+                  if (url && (await confirmBox(t('Use {protocol} for {remote}?', { protocol: /^https?:/.test(url) ? 'HTTPS' : 'SSH', remote: r.name }), url, t('Switch'))))
+                    run('remoteSetUrl', { name: r.name, url }, { success: t('Remote updated') })
                 })
               : null,
-            iconBtn('edit', 'Change URL', async () => {
-              const v = await dialog({ title: `URL for ${r.name}`, fields: [{ key: 'url', label: 'URL', value: r.fetch }], ok: 'Save' })
-              if (v?.url.trim()) run('remoteSetUrl', { name: r.name, url: v.url.trim() }, { success: 'Remote updated' })
+            iconBtn('edit', t('Change URL'), async () => {
+              const v = await dialog({ title: t('URL for {remote}', { remote: r.name }), fields: [{ key: 'url', label: t('URL'), value: r.fetch }], ok: t('Save') })
+              if (v?.url.trim()) run('remoteSetUrl', { name: r.name, url: v.url.trim() }, { success: t('Remote updated') })
             }),
-            iconBtn('trash', 'Remove remote', async () => (await confirmBox(`Remove remote ${r.name}?`, 'Its remote-tracking branches are removed too.', 'Remove', true)) && run('remoteRemove', { name: r.name }, { success: 'Remote removed' }))
+            iconBtn('trash', t('Remove remote'), async () => (await confirmBox(t('Remove remote {remote}?', { remote: r.name }), t('Its remote-tracking branches are removed too.'), t('Remove'), true)) && run('remoteRemove', { name: r.name }, { success: t('Remote removed') }))
           )
         )
       )
@@ -4776,18 +4830,18 @@ async function viewSettings() {
   const remembered = store.get('checkoutChanges', null)
   if (remembered)
     root.append(
-      h('div', { class: 'section-head' }, 'Checkout'),
+      h('div', { class: 'section-head' }, t('Checkout')),
       h(
         'div',
         { class: 'cfg-row' },
-        h('div', null, h('div', null, `With uncommitted changes, checkout always does: `, h('strong', null, { keep: "Don't change", stash: 'Stash', merge: 'Merge' }[remembered.mode] || remembered.mode)), h('div', { class: 'cfg-key' }, 'Saved from the checkout dialog')),
-        h('button', { class: 'btn sm', onClick: () => (store.set('checkoutChanges', null), toast('Checkout will ask again'), renderView({ force: true })) }, 'Ask every time')
+        h('div', null, h('div', null, t('With uncommitted changes, checkout always does: '), h('strong', null, { keep: t("Don't change"), stash: t('Stash'), merge: t('Merge') }[remembered.mode] || remembered.mode)), h('div', { class: 'cfg-key' }, t('Saved from the checkout dialog'))),
+        h('button', { class: 'btn sm', onClick: () => (store.set('checkoutChanges', null), toast(t('Checkout will ask again')), renderView({ force: true })) }, t('Ask every time'))
       )
     )
   if (scope === 'local') root.append(await maintenanceP)
 
   // every entry
-  root.append(h('div', { class: 'section-head' }, 'All entries', h('span', { class: 'count' }, entries.length), h('div', { class: 'actions' }, iconBtn('plus', 'Add entry', () => editEntry(scope)))))
+  root.append(h('div', { class: 'section-head' }, t('All entries'), h('span', { class: 'count' }, entries.length), h('div', { class: 'actions' }, iconBtn('plus', t('Add entry'), () => editEntry(scope)))))
   for (const e of entries)
     root.append(
       h(
@@ -4797,8 +4851,9 @@ async function viewSettings() {
         h(
           'div',
           { class: 'row', style: { gap: 0 } },
-          iconBtn('edit', 'Edit', () => editEntry(scope, e)),
-          iconBtn('trash', 'Unset', async () => (await confirmBox(`Unset ${e.key}?`, `Removes it from the ${scope === 'global' ? 'global' : 'repository'} config.`, 'Unset', true)) && run('configUnset', { scope, key: e.key }))
+          iconBtn('edit', t('Edit'), () => editEntry(scope, e)),
+          iconBtn('trash', t('Unset'), async () => (await confirmBox(t('Unset {key}?', { key: e.key }), scope === 'global' ? t('Removes it from the global config.') : t('Removes it from the repository config.'), t('Unset'), true))
+ && run('configUnset', { scope, key: e.key }))
         )
       )
     )
@@ -4815,27 +4870,27 @@ function swapProtocol(url) {
 
 async function editEntry(scope, e) {
   const r = await dialog({
-    title: e ? `Edit ${e.key}` : 'Add config entry',
+    title: e ? t('Edit {key}', { key: e.key }) : t('Add config entry'),
     fields: [
-      { key: 'key', label: 'Key', value: e?.key || '', placeholder: 'section.name' },
-      { key: 'value', label: 'Value', value: e?.value || '' }
+      { key: 'key', label: t('Key'), value: e?.key || '', placeholder: 'section.name' },
+      { key: 'value', label: t('Value'), value: e?.value || '' }
     ],
-    ok: 'Save'
+    ok: t('Save')
   })
   if (!r?.key.trim()) return
-  run('configSet', { scope, key: r.key.trim(), value: r.value }, { success: 'Saved' })
+  run('configSet', { scope, key: r.key.trim(), value: r.value }, { success: t('Saved') })
 }
 async function addRemote() {
   const r = await dialog({
-    title: 'Add remote',
+    title: t('Add remote'),
     fields: [
-      { key: 'name', label: 'Name', value: 'origin' },
-      { key: 'url', label: 'URL', placeholder: 'https://github.com/owner/repo.git' }
+      { key: 'name', label: t('Name'), value: 'origin' },
+      { key: 'url', label: t('URL'), placeholder: 'https://github.com/owner/repo.git' }
     ],
-    ok: 'Add'
+    ok: t('Add')
   })
   if (!r?.name.trim() || !r.url.trim()) return
-  run('remoteAdd', { name: r.name.trim(), url: r.url.trim() }, { success: 'Remote added' })
+  run('remoteAdd', { name: r.name.trim(), url: r.url.trim() }, { success: t('Remote added') })
 }
 
 
@@ -4846,15 +4901,15 @@ async function addRemote() {
 function fileMenu(anchor, f) {
   const ext = f.path.includes('.') ? '*' + f.path.slice(f.path.lastIndexOf('.')) : null
   menu(anchor, [
-    !f.untracked && { label: 'Blame', icon: 'user', onClick: () => blameSheet(f.path) },
-    !f.untracked && { label: 'File history', icon: 'history', onClick: () => fileHistory(f.path) },
+    !f.untracked && { label: t('Blame'), icon: 'user', onClick: () => blameSheet(f.path) },
+    !f.untracked && { label: t('File history'), icon: 'history', onClick: () => fileHistory(f.path) },
     '-',
-    { header: 'Add to .gitignore' },
-    { label: f.path, icon: 'x', onClick: () => run('ignore', { pattern: '/' + f.path }, { success: 'Added to .gitignore' }) },
-    ext && { label: ext, icon: 'x', onClick: () => run('ignore', { pattern: ext }, { success: 'Added to .gitignore' }) },
-    dirname(f.path) && { label: dirname(f.path) + '/', icon: 'folder', onClick: () => run('ignore', { pattern: '/' + dirname(f.path) + '/' }, { success: 'Added to .gitignore' }) },
+    { header: t('Add to .gitignore') },
+    { label: f.path, icon: 'x', onClick: () => run('ignore', { pattern: '/' + f.path }, { success: t('Added to .gitignore') }) },
+    ext && { label: ext, icon: 'x', onClick: () => run('ignore', { pattern: ext }, { success: t('Added to .gitignore') }) },
+    dirname(f.path) && { label: dirname(f.path) + '/', icon: 'folder', onClick: () => run('ignore', { pattern: '/' + dirname(f.path) + '/' }, { success: t('Added to .gitignore') }) },
     '-',
-    { label: 'Copy path', icon: 'copy', onClick: () => copy(f.path) }
+    { label: t('Copy path'), icon: 'copy', onClick: () => copy(f.path) }
   ])
 }
 
@@ -4877,12 +4932,12 @@ function commitList(commits, { graph = true } = {}) {
       )
     )
   )
-  if (!commits.length) list.append(h('div', { class: 'empty' }, 'No commits'))
+  if (!commits.length) list.append(h('div', { class: 'empty' }, t('No commits')))
   return list
 }
 
 async function sheetWith(title, loader) {
-  openSheet(title, h('div', { class: 'empty' }, 'Loading…'))
+  openSheet(title, h('div', { class: 'empty' }, t('Loading…')))
   const sheet = state.sheets[state.sheets.length - 1]
   try {
     const el = await loader()
@@ -4918,12 +4973,12 @@ async function preCommitCheck() {
     const box = h(
       'div',
       { class: 'dialog choice-dialog precommit', role: 'dialog' },
-      h('h3', null, 'Before you commit'),
-      h('p', { class: 'dim' }, 'A few things are worth a second look. Nothing is committed until you choose.'),
+      h('h3', null, t('Before you commit')),
+      h('p', { class: 'dim' }, t('A few things are worth a second look. Nothing is committed until you choose.')),
       h('div', { class: 'pc-list' }, ws.map((w) => h('div', { class: `pc-item k-${w.kind}` }, icon(ic[w.kind] || 'alert', 13), h('span', null, w.text)))),
-      ws.some((w) => w.kind === 'secret') && h('p', { class: 'pc-hint' }, 'Secrets in history are hard to remove and stay readable by everyone with the repository. Unstage the file, or move the value to an ignored .env file.'),
-      ws.some((w) => w.kind === 'branch') && h('label', { class: 'check' }, quiet, `Don't ask about ${r.branch} again in this repository`),
-      h('div', { class: 'buttons' }, h('button', { class: 'btn', onClick: () => done(false) }, 'Go back'), h('span', { class: 'grow' }), h('button', { class: `btn ${ws.some((w) => w.kind === 'secret') ? 'danger' : 'primary'}`, onClick: () => done(true) }, 'Commit anyway'))
+      ws.some((w) => w.kind === 'secret') && h('p', { class: 'pc-hint' }, t('Secrets in history are hard to remove and stay readable by everyone with the repository. Unstage the file, or move the value to an ignored .env file.')),
+      ws.some((w) => w.kind === 'branch') && h('label', { class: 'check' }, quiet, t("Don't ask about {branch} again in this repository", { branch: r.branch })),
+      h('div', { class: 'buttons' }, h('button', { class: 'btn', onClick: () => done(false) }, t('Go back')), h('span', { class: 'grow' }), h('button', { class: `btn ${ws.some((w) => w.kind === 'secret') ? 'danger' : 'primary'}`, onClick: () => done(true) }, t('Commit anyway')))
     )
     const overlay = h('div', { class: 'overlay', onMousedown: (e) => e.target === overlay && done(false) }, box)
     mountOverlay(overlay, () => done(false))
@@ -4935,25 +4990,25 @@ async function preCommitCheck() {
 async function explainSheet(target) {
   const what = target.item ? `${mrRef(target.item)} · ${target.item.title}` : `${target.hash.slice(0, 7)}${target.subject ? ` · ${target.subject}` : ''}`
   const body = h('div', { class: 'explain' })
-  openSheet(`Explain · ${what}`, body)
+  openSheet(t('Explain · {what}', { what }), body)
   const sheet = state.sheets[state.sheets.length - 1]
   sheet.el.classList.add('wide-sheet')
   placeSheet(sheet.el)
   const status = h('div', { class: 'ai-status' })
   const run1 = async () => {
     clear(body).append(h('div', { class: 'explain-wait' }, h('span', { class: 'ai-dots' }, h('i'), h('i'), h('i')), status))
-    const stop = aiTicker(status, 'AI', target.item ? 'the merge request' : 'the commit')
+    const stop = aiTicker(status, 'AI', target.item ? t('the merge request') : t('the commit'))
     try {
       const r = await request('ai.explain', target.item ? { item: { ...target.item, ci: undefined } } : { repo: state.repo, hash: target.hash }, 118000)
       stop()
       if (!sheet.el.isConnected) return
       clear(body).append(
-        h('div', { class: 'explain-head' }, icon('wand', 13), h('span', null, `Explained by ${r.agent}. It reads the diff; check anything important.`), h('span', { class: 'grow' }), h('button', { class: 'btn sm', onClick: run1 }, icon('refresh', 12), 'Explain again'), h('button', { class: 'btn sm', onClick: () => copy(r.text) }, icon('copy', 12), 'Copy')),
+        h('div', { class: 'explain-head' }, icon('wand', 13), h('span', null, t('Explained by {agent}. It reads the diff; check anything important.', { agent: r.agent })), h('span', { class: 'grow' }), h('button', { class: 'btn sm', onClick: run1 }, icon('refresh', 12), t('Explain again')), h('button', { class: 'btn sm', onClick: () => copy(r.text) }, icon('copy', 12), t('Copy'))),
         mdRender(r.text)
       )
     } catch (e) {
       stop()
-      if (sheet.el.isConnected) clear(body).append(h('div', { class: 'empty' }, icon('alert', 28), h('div', null, e.message), h('button', { class: 'btn sm', style: { marginTop: '10px' }, onClick: run1 }, icon('refresh', 12), 'Try again')))
+      if (sheet.el.isConnected) clear(body).append(h('div', { class: 'empty' }, icon('alert', 28), h('div', null, e.message), h('button', { class: 'btn sm', style: { marginTop: '10px' }, onClick: run1 }, icon('refresh', 12), t('Try again'))))
     }
   }
   run1()
@@ -4995,16 +5050,16 @@ document.addEventListener('drop', (e) => {
   const cur = state.status?.branch
   const items = []
   if (dst.kind === 'remote-group') {
-    if (src.kind === 'branch') items.push({ label: `Push ${nm(src.name)} to ${dst.name}`, icon: 'push', onClick: () => run('push', src.name === cur ? { remote: dst.name } : { branch: src.name, remote: dst.name }, { success: `Pushed ${src.name} to ${dst.name}` }) })
+    if (src.kind === 'branch') items.push({ label: t('Push {branch} to {remote}', { branch: nm(src.name), remote: dst.name }), icon: 'push', onClick: () => run('push', src.name === cur ? { remote: dst.name } : { branch: src.name, remote: dst.name }, { success: t('Pushed {branch} to {remote}', { branch: src.name, remote: dst.name }) }) })
   } else if (dst.name === cur) {
-    items.push({ label: mergeLabel(src.name, cur), full: `Merge ${src.name} → ${cur}`, icon: 'merge', onClick: () => mergeRef(src.name) })
+    items.push({ label: mergeLabel(src.name, cur), full: t('Merge {src} → {dst}', { src: src.name, dst: cur }), icon: 'merge', onClick: () => mergeRef(src.name) })
   } else if (src.name === cur) {
-    items.push({ label: `Rebase ${nm(cur)} onto ${nm(dst.name)}…`, icon: 'merge', onClick: () => rebaseOnto(dst.name) })
+    items.push({ label: t('Rebase {branch} onto {onto}…', { branch: nm(cur), onto: nm(dst.name) }), icon: 'merge', onClick: () => rebaseOnto(dst.name) })
     if (dst.kind !== 'tag') items.push(...withAiReview(mrBoth(dst.name.replace(/^[^/]+\//, ''), cur)))
   } else {
-    items.push({ label: `Switch to ${nm(dst.name)}, then merge ${nm(src.name)} in`, icon: 'merge', onClick: async () => (await checkout(dst.name), state.status?.branch === dst.name && mergeRef(src.name)) })
+    items.push({ label: t('Switch to {dst}, then merge {src} in', { dst: nm(dst.name), src: nm(src.name) }), icon: 'merge', onClick: async () => (await checkout(dst.name), state.status?.branch === dst.name && mergeRef(src.name)) })
   }
-  if (!items.filter(Boolean).length) return toast(`Nothing to do with ${src.name} on ${dst.name}`)
+  if (!items.filter(Boolean).length) return toast(t('Nothing to do with {src} on {dst}', { src: src.name, dst: dst.name }))
   menuPoint = { x: e.clientX, y: e.clientY }
   menu(menuPoint, [{ header: `${src.name} → ${dst.name}` }, ...items])
   menuPoint = null
@@ -5020,17 +5075,17 @@ async function fileExplorer(file, tab = 'history', rev) {
   const tabs = h('div', { class: 'mrd-tabs fx-tabs' })
   const pane = h('div', { class: 'fx-pane' })
   body.append(h('div', { class: 'fx-path mono dim' }, file), tabs, pane)
-  // t: the tab; r: a commit for "who wrote each line" as of that commit ("Lines at this point")
-  const go = (t, r) => {
-    tab = t
-    rev = t === 'blame' ? r : rev
-    clear(tabs).append(...[['history', 'History'], ['blame', 'Who wrote each line']].map(([k, l]) => h('button', { class: `mrd-tab ${tab === k ? 'on' : ''}`, onClick: () => go(k) }, l)))
+  // tabId: the tab; r: a commit for "who wrote each line" as of that commit ("Lines at this point")
+  const go = (tabId, r) => {
+    tab = tabId
+    rev = tabId === 'blame' ? r : rev
+    clear(tabs).append(...[['history', t('History')], ['blame', t('Who wrote each line')]].map(([k, l]) => h('button', { class: `mrd-tab ${tab === k ? 'on' : ''}`, onClick: () => go(k) }, l)))
     clear(pane).append(h('div', { class: 'inline-skeleton', style: { margin: '12px' } }, h('span'), h('span'), h('span')))
-    ;(tab === 'history' ? historyPane() : blamePane()).then((el) => sheet.el.isConnected && tab === t && clear(pane).append(el), (e) => clear(pane).append(h('div', { class: 'empty' }, e.message)))
+    ;(tab === 'history' ? historyPane() : blamePane()).then((el) => sheet.el.isConnected && tab === tabId && clear(pane).append(el), (e) => clear(pane).append(h('div', { class: 'empty' }, e.message)))
   }
   async function historyPane() {
     const commits = await call('log', { file, limit: 300 })
-    if (!commits.length) return h('div', { class: 'empty' }, 'No history for this file')
+    if (!commits.length) return h('div', { class: 'empty' }, t('No history for this file'))
     const list = h('div', { class: 'fx-list' })
     const diff = h('div', { class: 'fx-diff' })
     const pick = async (c, row) => {
@@ -5040,7 +5095,7 @@ async function fileExplorer(file, tab = 'history', rev) {
       try {
         const text = await call('commitFileDiff', { hash: c.hash, file })
         clear(diff).append(
-          h('div', { class: 'fx-diff-head' }, h('b', null, c.subject), h('span', { class: 'dim' }, ` · ${c.author} · ${ago(c.time)}`), h('span', { class: 'grow' }), h('button', { class: 'btn sm', onClick: () => openCommit(c.hash) }, icon('commit', 12), 'Open commit'), h('button', { class: 'btn sm', onClick: () => go('blame', c.hash) }, icon('user', 12), 'Lines at this point')),
+          h('div', { class: 'fx-diff-head' }, h('b', null, c.subject), h('span', { class: 'dim' }, ` · ${c.author} · ${ago(c.time)}`), h('span', { class: 'grow' }), h('button', { class: 'btn sm', onClick: () => openCommit(c.hash) }, icon('commit', 12), t('Open commit')), h('button', { class: 'btn sm', onClick: () => go('blame', c.hash) }, icon('user', 12), t('Lines at this point'))),
           renderDiff(text, null, { images: { old: c.parents?.[0] || null, new: c.hash } })
         )
       } catch (e) {
@@ -5060,7 +5115,7 @@ async function fileExplorer(file, tab = 'history', rev) {
     const min = Math.min(...times)
     const max = Math.max(...times)
     const wrap = h('div', { class: 'blame fx-blame' })
-    if (rev) wrap.append(h('div', { class: 'fx-note dim' }, `As of ${rev.slice(0, 7)}`))
+    if (rev) wrap.append(h('div', { class: 'fx-note dim' }, t('As of {rev}', { rev: rev.slice(0, 7) })))
     let prev = null
     lines.forEach((l, i) => {
       const c = commits[l.h] || {}
@@ -5076,7 +5131,7 @@ async function fileExplorer(file, tab = 'history', rev) {
           h(
             'span',
             { class: 'bl-meta', title: first ? `${c.summary || ''}\n${c.author || ''} · ${c.time ? fullDate(c.time) : ''}` : '', onClick: () => !/^0+$/.test(l.h) && openCommit(l.h) },
-            first ? [h('span', { class: 'mono' }, /^0+$/.test(l.h) ? 'not committed' : l.h.slice(0, 7)), ' ', h('span', { class: 'dim' }, `${c.author || ''} · ${c.time ? ago(c.time) : ''}`)] : ''
+            first ? [h('span', { class: 'mono' }, /^0+$/.test(l.h) ? t('not committed') : l.h.slice(0, 7)), ' ', h('span', { class: 'dim' }, `${c.author || ''} · ${c.time ? ago(c.time) : ''}`)] : ''
           ),
           h('span', { class: 'n' }, i + 1),
           h('span', { class: 'c' }, l.t)
@@ -5104,10 +5159,10 @@ function compareSheet(a, b) {
       h(
         'div',
         { class: 'detail' },
-        h('div', null, h('strong', null, short(b)), ` is ${r.ahead} commit${r.ahead === 1 ? '' : 's'} ahead and ${r.behind} behind `, h('strong', null, short(a))),
-        h('div', { class: 'actions-wrap' }, h('button', { class: 'btn sm', onClick: () => compareSheet(b, a) }, icon('compare', 12), 'Swap'))
+        h('div', null, h('strong', null, short(b)), r.ahead === 1 ? t(' is {ahead} commit ahead and {behind} behind ', { ahead: r.ahead, behind: r.behind }) : t(' is {ahead} commits ahead and {behind} behind ', { ahead: r.ahead, behind: r.behind }), h('strong', null, short(a))),
+        h('div', { class: 'actions-wrap' }, h('button', { class: 'btn sm', onClick: () => compareSheet(b, a) }, icon('compare', 12), t('Swap')))
       ),
-      h('div', { class: 'section-head' }, 'Files', h('span', { class: 'count' }, r.files.length))
+      h('div', { class: 'section-head' }, t('Files'), h('span', { class: 'count' }, r.files.length))
     )
     for (const f of r.files)
       wrap.append(
@@ -5119,16 +5174,16 @@ function compareSheet(a, b) {
           h('span', { class: 'file-dir grow' }, dirname(f.path))
         )
       )
-    if (!r.files.length) wrap.append(h('div', { class: 'empty' }, 'No differences'))
+    if (!r.files.length) wrap.append(h('div', { class: 'empty' }, t('No differences')))
     return wrap
   })
 }
 
 function treeSheet(rev) {
-  return sheetWith(`Files @ ${rev.slice(0, 7)}`, async () => {
+  return sheetWith(t('Files @ {rev}', { rev: rev.slice(0, 7) }), async () => {
     const files = await call('treeFiles', { rev })
     const wrap = h('div')
-    const filter = h('input', { type: 'text', placeholder: `Filter ${files.length} files…` })
+    const filter = h('input', { type: 'text', placeholder: t('Filter {n} files…', { n: files.length }) })
     const list = h('div')
     const draw = () => {
       const q = filter.value.toLowerCase()
@@ -5147,8 +5202,8 @@ function treeSheet(rev) {
               h(
                 'div',
                 { class: 'hover-actions', onClick: (e) => e.stopPropagation() },
-                iconBtn('user', 'Blame', () => blameSheet(f, rev)),
-                iconBtn('history', 'File history', () => fileHistory(f))
+                iconBtn('user', t('Blame'), () => blameSheet(f, rev)),
+                iconBtn('history', t('File history'), () => fileHistory(f))
               )
             )
           )
@@ -5179,8 +5234,8 @@ async function viewReflog() {
   const list = await call('reflog')
   const root = h('div', { class: 'view' })
   root.append(
-    h('div', { class: 'section-head' }, 'Reflog', h('span', { class: 'count' }, list.length)),
-    h('div', { class: 'dim', style: { padding: '0 16px 8px', fontSize: '11.5px' } }, 'Everywhere HEAD has been. Use it to recover commits after a reset, rebase or deleted branch.')
+    h('div', { class: 'section-head' }, t('Reflog'), h('span', { class: 'count' }, list.length)),
+    h('div', { class: 'dim', style: { padding: '0 16px 8px', fontSize: '11.5px' } }, t('Everywhere HEAD has been. Use it to recover commits after a reset, rebase or deleted branch.'))
   )
   for (const e of list)
     root.append(
@@ -5194,8 +5249,8 @@ async function viewReflog() {
         h(
           'div',
           { class: 'hover-actions', onClick: (ev) => ev.stopPropagation() },
-          h('button', { class: 'btn sm', title: 'Create a branch at this point (recovers lost commits)', onClick: () => newBranch(e.hash) }, icon('plus', 12), 'Branch here'),
-          h('button', { class: 'btn sm', title: 'Move the current branch back to this point', onClick: () => resetTo(e.hash) }, icon('undo', 12), 'Reset here')
+          h('button', { class: 'btn sm', title: t('Create a branch at this point (recovers lost commits)'), onClick: () => newBranch(e.hash) }, icon('plus', 12), t('Branch here')),
+          h('button', { class: 'btn sm', title: t('Move the current branch back to this point'), onClick: () => resetTo(e.hash) }, icon('undo', 12), t('Reset here'))
         )
       )
     )
@@ -5206,20 +5261,20 @@ function bisectBanner(st) {
   return h(
     'div',
     { class: 'banner info' },
-    h('div', { class: 'row' }, icon('search'), h('strong', null, 'Bisecting'), h('span', { class: 'dim mono' }, (st.oid || '').slice(0, 7))),
-    h('div', { class: 'dim', style: { fontSize: '11.5px' } }, 'Test this commit, then mark it. Git checks out the next one to test.'),
+    h('div', { class: 'row' }, icon('search'), h('strong', null, t('Bisecting')), h('span', { class: 'dim mono' }, (st.oid || '').slice(0, 7))),
+    h('div', { class: 'dim', style: { fontSize: '11.5px' } }, t('Test this commit, then mark it. Git checks out the next one to test.')),
     h(
       'div',
       { class: 'row' },
-      h('button', { class: 'btn sm', onClick: () => run('bisect', { action: 'good' }, { success: 'Marked good' }).then(() => resetHistory()) }, icon('check', 12), 'Good'),
-      h('button', { class: 'btn sm', onClick: () => run('bisect', { action: 'bad' }, { success: 'Marked bad' }).then(() => resetHistory()) }, icon('x', 12), 'Bad'),
-      h('button', { class: 'btn sm', onClick: () => run('bisect', { action: 'skip' }, { success: 'Skipped' }) }, 'Skip'),
-      h('button', { class: 'btn sm danger', onClick: () => run('bisect', { action: 'reset' }, { success: 'Bisect finished' }).then(() => resetHistory()) }, 'Stop')
+      h('button', { class: 'btn sm', onClick: () => run('bisect', { action: 'good' }, { success: t('Marked good') }).then(() => resetHistory()) }, icon('check', 12), t('Good')),
+      h('button', { class: 'btn sm', onClick: () => run('bisect', { action: 'bad' }, { success: t('Marked bad') }).then(() => resetHistory()) }, icon('x', 12), t('Bad')),
+      h('button', { class: 'btn sm', onClick: () => run('bisect', { action: 'skip' }, { success: t('Skipped') }) }, t('Skip')),
+      h('button', { class: 'btn sm danger', onClick: () => run('bisect', { action: 'reset' }, { success: t('Bisect finished') }).then(() => resetHistory()) }, t('Stop'))
     )
   )
 }
 async function startBisect(goodHash) {
-  if (!(await confirmBox('Start bisect?', `Git will search between ${goodHash.slice(0, 7)} (good) and HEAD (bad) for the commit that introduced a bug.`, 'Start'))) return
+  if (!(await confirmBox(t('Start bisect?'), t('Git will search between {hash} (good) and HEAD (bad) for the commit that introduced a bug.', { hash: goodHash.slice(0, 7) }), t('Start')))) return
   closeSheet()
   try {
     await call('bisect', { action: 'start' })
@@ -5233,11 +5288,11 @@ async function startBisect(goodHash) {
 }
 
 async function rewordLast(c) {
-  const r = await dialog({ title: 'Reword last commit', fields: [{ key: 'msg', label: 'Message', type: 'textarea', value: c.message }], ok: 'Save' })
+  const r = await dialog({ title: t('Reword last commit'), fields: [{ key: 'msg', label: t('Message'), type: 'textarea', value: c.message }], ok: t('Save') })
   if (!r?.msg.trim()) return
   closeSheet()
   resetHistory()
-  run('rewordLast', { message: r.msg }, { success: 'Message updated' })
+  run('rewordLast', { message: r.msg }, { success: t('Message updated') })
 }
 
 async function squashSince(base) {
@@ -5247,17 +5302,17 @@ async function squashSince(base) {
   } catch (e) {
     return toast(e.message, 'error')
   }
-  if (todo.length < 2) return toast('There is only one commit after this one', 'error')
+  if (todo.length < 2) return toast(t('There is only one commit after this one'), 'error')
   const r = await dialog({
-    title: `Squash ${todo.length} commits`,
-    message: `Every commit after ${base.slice(0, 7)} on ${state.status?.branch || 'HEAD'} becomes one commit.`,
-    fields: [{ key: 'msg', label: 'Message for the new commit', type: 'textarea', value: todo.map((t) => t.subject).reverse().join('\n') }],
-    ok: 'Squash'
+    title: t('Squash {n} commits', { n: todo.length }),
+    message: t('Every commit after {base} on {branch} becomes one commit.', { base: base.slice(0, 7), branch: state.status?.branch || 'HEAD' }),
+    fields: [{ key: 'msg', label: t('Message for the new commit'), type: 'textarea', value: todo.map((t) => t.subject).reverse().join('\n') }],
+    ok: t('Squash')
   })
   if (!r?.msg.trim()) return
   closeSheet()
   resetHistory()
-  run('squashSince', { base, message: r.msg }, { success: 'Squashed' })
+  run('squashSince', { base, message: r.msg }, { success: t('Squashed') })
 }
 
 /**
@@ -5272,17 +5327,17 @@ async function interactiveRebase(base) {
   } catch (e) {
     return toast(e.message, 'error')
   }
-  if (!todo.length) return toast('No commits after this one', 'error')
+  if (!todo.length) return toast(t('No commits after this one'), 'error')
   closeOverlays()
   const cur = state.status?.branch || 'HEAD'
   const ACTS = [
-    ['pick', 'Keep', 'p'],
-    ['reword', 'Reword', 'r'],
-    ['squash', 'Squash ↑', 's'],
-    ['fixup', 'Fixup ↑', 'f'],
-    ['drop', 'Drop', 'd']
+    ['pick', t('Keep'), 'p'],
+    ['reword', t('Reword'), 'r'],
+    ['squash', t('Squash ↑'), 's'],
+    ['fixup', t('Fixup ↑'), 'f'],
+    ['drop', t('Drop'), 'd']
   ]
-  const HELP = { pick: 'kept as it is', reword: 'kept, with the new message', squash: 'joined into the commit above; both messages kept', fixup: 'joined into the commit above; its message dropped', drop: 'removed' }
+  const HELP = { pick: t('kept as it is'), reword: t('kept, with the new message'), squash: t('joined into the commit above; both messages kept'), fixup: t('joined into the commit above; its message dropped'), drop: t('removed') }
   const list = h('div', { class: 'rb-list' })
   const summary = h('div', { class: 'rb-summary' })
   let dragFrom = null
@@ -5299,29 +5354,29 @@ async function interactiveRebase(base) {
   }
   function draw(focus) {
     clear(list)
-    todo.forEach((t, i) => {
+    todo.forEach((step, i) => {
       const firstKept = todo.findIndex((x) => x.action !== 'drop') === i
       const acts = h(
         'div',
         { class: 'rb-acts', role: 'radiogroup' },
         ACTS.map(([k, label, key]) =>
-          h('button', { type: 'button', class: `rb-act a-${k} ${t.action === k ? 'on' : ''}`, title: `${label}: ${HELP[k]} (${key})`, disabled: firstKept && (k === 'squash' || k === 'fixup'), onClick: () => ((t.action = k), fix(), draw(i)) }, label)
+          h('button', { type: 'button', class: `rb-act a-${k} ${step.action === k ? 'on' : ''}`, title: `${label}: ${HELP[k]} (${key})`, disabled: firstKept && (k === 'squash' || k === 'fixup'), onClick: () => ((step.action = k), fix(), draw(i)) }, label)
         )
       )
       const msg =
-        t.action === 'reword' &&
+        step.action === 'reword' &&
         h('input', {
           type: 'text',
           class: 'rb-msg',
-          value: t.message,
-          placeholder: 'New message',
-          onInput: (e) => ((t.message = e.target.value), drawSummary()),
+          value: step.message,
+          placeholder: t('New message'),
+          onInput: (e) => ((step.message = e.target.value), drawSummary()),
           onKeydown: (e) => e.stopPropagation()
         })
       const row = h(
         'div',
         {
-          class: `rb-row a-${t.action}`,
+          class: `rb-row a-${step.action}`,
           tabindex: 0,
           draggable: 'true',
           onDragstart: (e) => ((dragFrom = i), row.classList.add('dragging'), e.dataTransfer.setData('text/plain', String(i))),
@@ -5331,18 +5386,18 @@ async function interactiveRebase(base) {
           onDrop: (e) => (e.preventDefault(), row.classList.remove('drop-here'), dragFrom != null && move(dragFrom, i), (dragFrom = null)),
           onKeydown: (e) => {
             const k = ACTS.find(([, , key]) => key === e.key.toLowerCase())
-            if (k && !(firstKept && (k[0] === 'squash' || k[0] === 'fixup'))) (e.preventDefault(), (t.action = k[0]), fix(), draw(i))
+            if (k && !(firstKept && (k[0] === 'squash' || k[0] === 'fixup'))) (e.preventDefault(), (step.action = k[0]), fix(), draw(i))
             else if (e.key === 'ArrowUp' && e.altKey) (e.preventDefault(), move(i, i - 1))
             else if (e.key === 'ArrowDown' && e.altKey) (e.preventDefault(), move(i, i + 1))
             else if (e.key === 'ArrowUp') (e.preventDefault(), list.children[i - 1]?.focus())
             else if (e.key === 'ArrowDown') (e.preventDefault(), list.children[i + 1]?.focus())
           }
         },
-        h('span', { class: 'rb-grip', title: 'Drag to reorder (or Alt+↑ ↓)' }, '⠿'),
-        h('span', { class: 'mono dim rb-hash' }, t.hash.slice(0, 7)),
-        h('div', { class: 'grow rb-main' }, h('span', { class: 'ellipsis rb-subject', title: t.subject }, t.subject), msg, (t.action === 'squash' || t.action === 'fixup') && h('span', { class: 'rb-hint' }, '↳ joins the commit above')),
+        h('span', { class: 'rb-grip', title: t('Drag to reorder (or Alt+↑ ↓)') }, '⠿'),
+        h('span', { class: 'mono dim rb-hash' }, step.hash.slice(0, 7)),
+        h('div', { class: 'grow rb-main' }, h('span', { class: 'ellipsis rb-subject', title: step.subject }, step.subject), msg, (step.action === 'squash' || step.action === 'fixup') && h('span', { class: 'rb-hint' }, t('↳ joins the commit above'))),
         acts,
-        h('div', { class: 'rb-move' }, iconBtn('up', 'Move up', () => move(i, i - 1), { disabled: i === 0 }), iconBtn('down', 'Move down', () => move(i, i + 1), { disabled: i === todo.length - 1 }))
+        h('div', { class: 'rb-move' }, iconBtn('up', t('Move up'), () => move(i, i - 1), { disabled: i === 0 }), iconBtn('down', t('Move down'), () => move(i, i + 1), { disabled: i === todo.length - 1 }))
       )
       list.append(row)
     })
@@ -5355,18 +5410,18 @@ async function interactiveRebase(base) {
     const dropped = todo.filter((t) => t.action === 'drop').length
     const reworded = todo.filter((t) => t.action === 'reword' && t.message.trim() && t.message.trim() !== t.subject).length
     const moved = todo.some((t, i) => t.hash !== orig[i])
-    const changes = [joined && `${joined} joined`, dropped && `${dropped} dropped`, reworded && `${reworded} reworded`, moved && 'reordered'].filter(Boolean)
-    clear(summary).append(icon('history', 13), h('span', null, h('b', null, `${todo.length} → ${kept} commit${kept === 1 ? '' : 's'} on ${cur}`), changes.length ? ` · ${changes.join(', ')}` : ' · nothing changed yet', h('span', { class: 'dim' }, ' · Undo takes it all back')))
+    const changes = [joined && t('{n} joined', { n: joined }), dropped && t('{n} dropped', { n: dropped }), reworded && t('{n} reworded', { n: reworded }), moved && t('reordered')].filter(Boolean)
+    clear(summary).append(icon('history', 13), h('span', null, h('b', null, kept === 1 ? t('{from} → {n} commit on {branch}', { from: todo.length, n: kept, branch: cur }) : t('{from} → {n} commits on {branch}', { from: todo.length, n: kept, branch: cur })), changes.length ? ` · ${changes.join(', ')}` : t(' · nothing changed yet'), h('span', { class: 'dim' }, t(' · Undo takes it all back'))))
     start.disabled = !changes.length || kept === 0
   }
   const orig = todo.map((t) => t.hash)
-  const start = h('button', { class: 'btn primary', onClick: () => go() }, icon('check', 12), 'Start')
+  const start = h('button', { class: 'btn primary', onClick: () => go() }, icon('check', 12), t('Start'))
   async function go() {
-    if (todo.some((t) => t.action === 'reword' && !t.message.trim())) return toast('Write the new message for each Reword', 'error')
+    if (todo.some((t) => t.action === 'reword' && !t.message.trim())) return toast(t('Write the new message for each Reword'), 'error')
     close()
     if (state.sheets.length) closeSheet()
     resetHistory()
-    const out = await run('rebaseInteractive', { base, todo: todo.map(({ hash, action, message }) => ({ hash, action, message: action === 'reword' ? message : undefined })) }, { success: `Rewrote ${cur}` })
+    const out = await run('rebaseInteractive', { base, todo: todo.map(({ hash, action, message }) => ({ hash, action, message: action === 'reword' ? message : undefined })) }, { success: t('Rewrote {branch}', { branch: cur }) })
     if (out === undefined && state.status?.files.some((f) => f.conflict)) openConflicts()
   }
   const close = () => {
@@ -5377,11 +5432,11 @@ async function interactiveRebase(base) {
   const box = h(
     'div',
     { class: 'dialog wide-dialog rb-dialog', role: 'dialog' },
-    h('h3', null, `Edit ${todo.length} commit${todo.length > 1 ? 's' : ''} on ${cur}`),
-    h('p', { class: 'dim' }, `After ${base.slice(0, 7)}, oldest first. Drag to reorder; choose what happens to each. Keys: p r s f d, Alt+↑ ↓ to move.`),
+    h('h3', null, todo.length > 1 ? t('Edit {n} commits on {branch}', { n: todo.length, branch: cur }) : t('Edit {n} commit on {branch}', { n: todo.length, branch: cur })),
+    h('p', { class: 'dim' }, t('After {base}, oldest first. Drag to reorder; choose what happens to each. Keys: p r s f d, Alt+↑ ↓ to move.', { base: base.slice(0, 7) })),
     list,
     summary,
-    h('div', { class: 'buttons' }, h('button', { class: 'btn', onClick: close }, 'Cancel'), h('span', { class: 'grow' }), start)
+    h('div', { class: 'buttons' }, h('button', { class: 'btn', onClick: close }, t('Cancel')), h('span', { class: 'grow' }), start)
   )
   const overlay = h('div', { class: 'overlay', onMousedown: (e) => e.target === overlay && close() }, box)
   mountOverlay(overlay, close)
@@ -5395,10 +5450,10 @@ async function savePatch(c) {
     const name = `${c.hash.slice(0, 7)}-${(c.message.split('\n')[0] || 'patch').replace(/[^a-z0-9]+/gi, '-').slice(0, 40)}.patch`
     if (window.orca?.files?.saveAs) {
       const r = await window.orca.files.saveAs({ suggestedName: name, mimeType: 'text/x-diff', data: text })
-      if (r.status === 'saved') toast('Patch saved')
+      if (r.status === 'saved') toast(t('Patch saved'))
     } else {
       await copy(text)
-      toast('Patch copied to the clipboard')
+      toast(t('Patch copied to the clipboard'))
     }
   } catch (e) {
     toast(e.message, 'error')
@@ -5408,13 +5463,13 @@ async function savePatch(c) {
 async function cloneRepo() {
   const base = state.status?.toplevel ? state.status.toplevel.replace(/[\\/][^\\/]+[\\/]?$/, '') : ''
   const r = await dialog({
-    title: 'Clone repository',
+    title: t('Clone repository'),
     fields: [
-      { key: 'url', label: 'Repository URL', placeholder: 'https://github.com/owner/repo.git' },
-      { key: 'path', label: 'Folder', value: base, placeholder: 'C:\\code', hint: 'The repository folder is created inside it.' },
-      { key: 'recursive', label: 'Include submodules', type: 'check', value: true }
+      { key: 'url', label: t('Repository URL'), placeholder: 'https://github.com/owner/repo.git' },
+      { key: 'path', label: t('Folder'), value: base, placeholder: 'C:\\code', hint: t('The repository folder is created inside it.') },
+      { key: 'recursive', label: t('Include submodules'), type: 'check', value: true }
     ],
-    ok: 'Clone'
+    ok: t('Clone')
   })
   if (!r?.url.trim()) return
   const name = r.url.trim().replace(/[\\/]+$/, '').split(/[\\/:]/).pop().replace(/\.git$/, '')
@@ -5422,7 +5477,7 @@ async function cloneRepo() {
   setBusy(1)
   try {
     const out = await request('git', { op: 'clone', args: { url: r.url.trim(), path: dir, recursive: r.recursive } }, 120000)
-    toast(`Cloned into ${out}`)
+    toast(t('Cloned into {path}', { path: out }))
     pinRepo(out)
   } catch (e) {
     toast(e.message, 'error')
@@ -5434,7 +5489,7 @@ async function cloneRepo() {
 async function maintenanceSection() {
   const wrap = h('div')
   const subs = await call('submodules').catch(() => [])
-  wrap.append(h('div', { class: 'section-head' }, 'Maintenance'))
+  wrap.append(h('div', { class: 'section-head' }, t('Maintenance')))
   wrap.append(
     h(
       'div',
@@ -5449,28 +5504,28 @@ async function maintenanceSection() {
             onClick: async () => {
               const list = await call('cleanPreview', {}).catch((e) => (toast(e.message, 'error'), null))
               if (!list) return
-              if (!list.length) return toast('No untracked files to clean')
+              if (!list.length) return toast(t('No untracked files to clean'))
               const r = await dialog({
-                title: `Delete ${list.length} untracked item${list.length > 1 ? 's' : ''}?`,
-                message: list.slice(0, 15).join('\n') + (list.length > 15 ? `\n… and ${list.length - 15} more` : ''),
-                fields: [{ key: 'ignored', label: 'Also delete ignored files (build output, node_modules…)', type: 'check', value: false }],
-                ok: 'Delete',
+                title: list.length > 1 ? t('Delete {n} untracked items?', { n: list.length }) : t('Delete {n} untracked item?', { n: list.length }),
+                message: list.slice(0, 15).join('\n') + (list.length > 15 ? '\n' + t('… and {n} more', { n: list.length - 15 }) : ''),
+                fields: [{ key: 'ignored', label: t('Also delete ignored files (build output, node_modules…)'), type: 'check', value: false }],
+                ok: t('Delete'),
                 danger: true
               })
-              if (r) run('clean', { ignored: r.ignored }, { success: 'Cleaned' })
+              if (r) run('clean', { ignored: r.ignored }, { success: t('Cleaned') })
             }
           },
           icon('trash', 12),
-          'Clean untracked files…'
+          t('Clean untracked files…')
         ),
-        h('button', { class: 'btn sm', onClick: () => run('gc', {}, { success: 'Repository compressed' }) }, icon('layers', 12), 'Garbage collect'),
-        h('button', { class: 'btn sm', onClick: () => run('fetch', { prune: true }, { success: 'Fetched and pruned' }) }, icon('fetch', 12), 'Fetch & prune')
+        h('button', { class: 'btn sm', onClick: () => run('gc', {}, { success: t('Repository compressed') }) }, icon('layers', 12), t('Garbage collect')),
+        h('button', { class: 'btn sm', onClick: () => run('fetch', { prune: true }, { success: t('Fetched and pruned') }) }, icon('fetch', 12), t('Fetch & prune'))
       )
     )
   )
   if (subs.length) {
     wrap.append(
-      h('div', { class: 'section-head' }, 'Submodules', h('span', { class: 'count' }, subs.length), h('div', { class: 'actions' }, iconBtn('refresh', 'Update all (init, recursive)', () => run('submoduleUpdate', {}, { success: 'Submodules updated' }))))
+      h('div', { class: 'section-head' }, t('Submodules'), h('span', { class: 'count' }, subs.length), h('div', { class: 'actions' }, iconBtn('refresh', t('Update all (init, recursive)'), () => run('submoduleUpdate', {}, { success: t('Submodules updated') }))))
     )
     for (const m of subs)
       wrap.append(
@@ -5480,7 +5535,7 @@ async function maintenanceSection() {
           icon('layers', 13),
           h('span', { class: 'grow ellipsis' }, m.path),
           h('span', { class: `pill ${m.state === 'ok' ? 'on' : ''}` }, m.state),
-          h('div', { class: 'hover-actions', onClick: (e) => e.stopPropagation() }, iconBtn('right', 'View in panel', () => pinRepo((state.status.toplevel + '/' + m.path).replace(/\\/g, '/'))))
+          h('div', { class: 'hover-actions', onClick: (e) => e.stopPropagation() }, iconBtn('right', t('View in panel'), () => pinRepo((state.status.toplevel + '/' + m.path).replace(/\\/g, '/'))))
         )
       )
   }
@@ -5512,16 +5567,16 @@ async function renderSide() {
     if (open) side.append(items())
   }
   if (!state.status) return
-  section('local', 'Branches', refs.local.length, () => h('div', null, refs.local.map((b) => localBranchRow(b))), [
-    iconBtn('trash', 'Clean up merged and gone branches', (e) => (e.stopPropagation(), cleanupBranches())),
-    iconBtn('plus', 'New branch', (e) => (e.stopPropagation(), newBranch()))
+  section('local', t('Branches'), refs.local.length, () => h('div', null, refs.local.map((b) => localBranchRow(b))), [
+    iconBtn('trash', t('Clean up merged and gone branches'), (e) => (e.stopPropagation(), cleanupBranches())),
+    iconBtn('plus', t('New branch'), (e) => (e.stopPropagation(), newBranch()))
   ])
-  section('remote', 'Remotes', refs.remote.length, () => h('div', null, refs.remote.map((b) => remoteBranchRow(b, refs.local))))
+  section('remote', t('Remotes'), refs.remote.length, () => h('div', null, refs.remote.map((b) => remoteBranchRow(b, refs.local))))
   // one remote: drop a branch on its heading to push it there
   const remoteNames = [...new Set(refs.remote.map((b) => b.name.split('/')[0]))]
-  const rh = [...side.querySelectorAll('.side-head')].find((x) => x.textContent.startsWith('Remotes'))
-  if (rh && remoteNames.length === 1) Object.assign(rh.dataset, { dropRef: remoteNames[0], dropKind: 'remote-group' }), (rh.title = `Drop a branch here to push it to ${remoteNames[0]}`)
-  section('tags', 'Tags', refs.tags.length, () => h('div', null, refs.tags.map((t) => tagRow(t))))
+  const rh = [...side.querySelectorAll('.side-head')].find((x) => x.textContent.startsWith(t('Remotes')))
+  if (rh && remoteNames.length === 1) Object.assign(rh.dataset, { dropRef: remoteNames[0], dropKind: 'remote-group' }), (rh.title = t('Drop a branch here to push it to {remote}', { remote: remoteNames[0] }))
+  section('tags', t('Tags'), refs.tags.length, () => h('div', null, refs.tags.map((t) => tagRow(t))))
   side.scrollTop = scroll
 }
 
@@ -5537,15 +5592,15 @@ async function renderSide() {
 function aiWrap(textarea) {
   return h('div', { class: 'ai-wrap' }, textarea, h('div', { class: 'ai-skel', 'aria-hidden': 'true' }, h('span'), h('span'), h('span'), h('span'), h('span')))
 }
-function aiTicker(statusEl, name, what = 'your changes') {
+function aiTicker(statusEl, name, what = t('your changes')) {
   const started = Date.now()
-  const phase = (t) => (t < 6 ? `${name} is reading ${what}` : t < 20 ? `${name} is thinking` : t < 60 ? `${name} is writing` : `${name} is still working (large changes take longer)`)
+  const phase = (sec) => (sec < 6 ? t('{name} is reading {what}', { name, what }) : sec < 20 ? t('{name} is thinking', { name }) : sec < 60 ? t('{name} is writing', { name }) : t('{name} is still working (large changes take longer)', { name }))
   const text = h('span', { class: 'ai-phase' })
   const secs = h('span', { class: 'ai-secs mono' })
   const draw = () => {
-    const t = Math.floor((Date.now() - started) / 1000)
-    text.textContent = phase(t) + '…'
-    secs.textContent = `${t}s`
+    const sec = Math.floor((Date.now() - started) / 1000)
+    text.textContent = phase(sec) + '…'
+    secs.textContent = t('{n}s', { n: sec })
   }
   draw()
   append(clear(statusEl), [h('span', { class: 'ai-dots' }, h('i'), h('i'), h('i')), text, secs])
@@ -5571,7 +5626,7 @@ async function aiCommitModal({ staged, total, onUse, onCommit }) {
   const agentSel = h('select', { onChange: () => request('ai.settings', { agent: agentSel.value }).catch(() => {}) })
   const fillAgents = () => {
     clear(agentSel)
-    for (const a of agents) agentSel.append(h('option', { value: a.id, selected: a.id === agent, disabled: !a.available }, a.available ? a.name : `${a.name} (not installed)`))
+    for (const a of agents) agentSel.append(h('option', { value: a.id, selected: a.id === agent, disabled: !a.available }, a.available ? a.name : t('{name} (not installed)', { name: a.name })))
   }
   fillAgents()
   request('ai.settings', {}, 20000)
@@ -5585,15 +5640,15 @@ async function aiCommitModal({ staged, total, onUse, onCommit }) {
   const scopeSel = h(
     'select',
     null,
-    h('option', { value: 'auto', selected: true }, staged ? `Staged changes (${staged} file${staged > 1 ? 's' : ''})` : `All changes (${total} file${total > 1 ? 's' : ''})`),
-    staged && staged < total ? h('option', { value: 'all' }, `All changes (${total} files)`) : null
+    h('option', { value: 'auto', selected: true }, staged ? (staged > 1 ? t('Staged changes ({n} files)', { n: staged }) : t('Staged changes ({n} file)', { n: staged })) : total > 1 ? t('All changes ({n} files)', { n: total }) : t('All changes ({n} file)', { n: total })),
+    staged && staged < total ? h('option', { value: 'all' }, t('All changes ({n} files)', { n: total })) : null
   )
-  const instructions = h('textarea', { rows: 2, placeholder: 'Optional, e.g. "Use Conventional Commits", "Write in Thai", "Mention the ticket ID"' }, prefs.instructions || '')
+  const instructions = h('textarea', { rows: 2, placeholder: t('Optional, e.g. "Use Conventional Commits", "Write in Thai", "Mention the ticket ID"') }, prefs.instructions || '')
   instructions.value = prefs.instructions || ''
-  const result = h('textarea', { class: 'ai-result', rows: 6, placeholder: 'The generated message appears here. You can edit it before using it.' })
+  const result = h('textarea', { class: 'ai-result', rows: 6, placeholder: t('The generated message appears here. You can edit it before using it.') })
   const status = h('div', { class: 'ai-status' })
-  const genBtn = h('button', { type: 'button', class: 'btn sm ai-gen', onClick: () => generate() }, icon('wand', 13), 'Generate')
-  const commitBtn = h('button', { type: 'button', class: 'btn primary', disabled: true, onClick: () => finish(onCommit) }, icon('check', 13), 'Commit')
+  const genBtn = h('button', { type: 'button', class: 'btn sm ai-gen', onClick: () => generate() }, icon('wand', 13), t('Generate'))
+  const commitBtn = h('button', { type: 'button', class: 'btn primary', disabled: true, onClick: () => finish(onCommit) }, icon('check', 13), t('Commit'))
 
   let stopTick = () => {}
   const setBusy2 = (on, text) => {
@@ -5603,7 +5658,7 @@ async function aiCommitModal({ staged, total, onUse, onCommit }) {
     stopTick()
     if (on) stopTick = aiTicker(status, agents.find((a) => a.id === agentSel.value)?.name || 'AI', 'your changes')
     else append(clear(status), [text || ''])
-    append(clear(genBtn), [on ? [icon('x', 13), 'Stop'] : [icon(result.value.trim() ? 'refresh' : 'wand', 13), result.value.trim() ? 'Regenerate' : 'Generate']])
+    append(clear(genBtn), [on ? [icon('x', 13), t('Stop')] : [icon(result.value.trim() ? 'refresh' : 'wand', 13), result.value.trim() ? t('Regenerate') : t('Generate')]])
     genBtn.className = `btn sm ai-gen ${on ? 'stop' : ''}`
     const has = !on && !!result.value.trim()
     commitBtn.disabled = !has
@@ -5613,18 +5668,18 @@ async function aiCommitModal({ staged, total, onUse, onCommit }) {
   async function generate() {
     if (busy) {
       gen++
-      return setBusy2(false, 'Stopped.')
+      return setBusy2(false, t('Stopped.'))
     }
     const my = ++gen
     store.set('aiPrefs', { instructions: instructions.value })
     const name = agents.find((a) => a.id === agentSel.value)?.name || 'AI'
-    setBusy2(true, `${name} is reading your changes…`)
+    setBusy2(true, t('{name} is reading your changes…', { name }))
     const started = Date.now()
     try {
       const msg = await request('ai.commitMessage', { repo: state.repo, agent: agentSel.value, instructions: instructions.value, scope: scopeSel.value }, 115000)
       if (my !== gen) return
       result.value = msg
-      setBusy2(false, `Generated by ${name} in ${((Date.now() - started) / 1000).toFixed(1)}s. Review and edit before committing.`)
+      setBusy2(false, t('Generated by {name} in {secs}s. Review and edit before committing.', { name, secs: ((Date.now() - started) / 1000).toFixed(1) }))
       result.focus()
     } catch (e) {
       if (my !== gen) return
@@ -5655,18 +5710,18 @@ async function aiCommitModal({ staged, total, onUse, onCommit }) {
 
   const box = h(
     'div',
-    { class: 'dialog ai-dialog', role: 'dialog', 'aria-label': 'Generate commit message' },
-    h('div', { class: 'ai-title' }, h('div', null, h('h3', null, 'Generate commit message'), h('p', null, 'An AI agent reads your diff and drafts a message. Nothing is committed until you choose.'))),
-    h('div', { class: 'ai-row' }, h('div', { class: 'field grow' }, h('label', null, 'Agent'), agentSel), h('div', { class: 'field grow' }, h('label', null, 'Changes'), scopeSel)),
-    h('div', { class: 'field' }, h('label', null, 'Instructions'), instructions),
-    h('div', { class: 'field' }, h('div', { class: 'ai-msg-head' }, h('label', null, 'Message'), genBtn), aiWrap(result)),
+    { class: 'dialog ai-dialog', role: 'dialog', 'aria-label': t('Generate commit message') },
+    h('div', { class: 'ai-title' }, h('div', null, h('h3', null, t('Generate commit message')), h('p', null, t('An AI agent reads your diff and drafts a message. Nothing is committed until you choose.')))),
+    h('div', { class: 'ai-row' }, h('div', { class: 'field grow' }, h('label', null, t('Agent')), agentSel), h('div', { class: 'field grow' }, h('label', null, t('Changes')), scopeSel)),
+    h('div', { class: 'field' }, h('label', null, t('Instructions')), instructions),
+    h('div', { class: 'field' }, h('div', { class: 'ai-msg-head' }, h('label', null, t('Message')), genBtn), aiWrap(result)),
     status,
-    h('div', { class: 'buttons' }, h('button', { type: 'button', class: 'btn', title: 'A generated message stays in the commit box', onClick: () => close() }, 'Close'), h('span', { class: 'grow' }), commitBtn)
+    h('div', { class: 'buttons' }, h('button', { type: 'button', class: 'btn', title: t('A generated message stays in the commit box'), onClick: () => close() }, t('Close')), h('span', { class: 'grow' }), commitBtn)
   )
   const overlay = h('div', { class: 'overlay', onMousedown: (e) => e.target === overlay && !busy && close() }, box)
   mountOverlay(overlay, () => close())
   document.addEventListener('keydown', onKey)
-  status.textContent = 'Choose the agent, add instructions if you like, then press Generate.'
+  status.textContent = t('Choose the agent, add instructions if you like, then press Generate.')
   genBtn.focus() // pick the agent and instructions first; Generate (or Ctrl+Enter) starts it
 }
 
@@ -5678,10 +5733,10 @@ async function aiCommitModal({ staged, total, onUse, onCommit }) {
 function withAiReview(mr) {
   if (!mr) return [null]
   const ai = {
-    label: 'Review with AI',
+    label: t('Review with AI'),
     icon: 'sparkle',
     cls: 'ai-item',
-    items: mr.items.map((x) => ({ label: x.label.replace(/…$/, ''), full: x.full.replace(/^Merge request:/, 'Review with AI:'), icon: 'sparkle', cls: 'ai-item', onClick: () => localReviewModal({ source: x.dir[0], target: x.dir[1] }) }))
+    items: mr.items.map((x) => ({ label: x.label.replace(/…$/, ''), full: t('Review with AI: {source} → {target}', { source: x.dir[0], target: x.dir[1] }), icon: 'sparkle', cls: 'ai-item', onClick: () => localReviewModal({ source: x.dir[0], target: x.dir[1] }) }))
   }
   return [mr, ai]
 }
@@ -5692,7 +5747,7 @@ function reviewBody(md) {
   for (const code of el.querySelectorAll('code')) {
     const m = code.textContent.trim().match(/^([\w@./\\-]+\.[\w]+):(\d+)(?:-\d+)?$/)
     if (!m) continue
-    const a = h('button', { class: 'linkish mono review-ref', title: `Open ${m[1]} (line ${m[2]})`, onClick: () => request('file.open', { repo: state.repo, file: m[1], line: +m[2] }).catch((e) => toast(e.message, 'error')) }, code.textContent)
+    const a = h('button', { class: 'linkish mono review-ref', title: t('Open {file} (line {line})', { file: m[1], line: m[2] }), onClick: () => request('file.open', { repo: state.repo, file: m[1], line: +m[2] }).catch((e) => toast(e.message, 'error')) }, code.textContent)
     code.replaceWith(a)
   }
   return el
@@ -5713,24 +5768,24 @@ async function localReviewModal({ source, target, staged = false, onNext } = {})
   let agent = 'claude'
   let gen = 0
   let busy = false
-  const what = staged ? 'staged changes' : `${source || state.status?.branch || 'this branch'} → ${target}`
+  const what = staged ? t('staged changes') : `${source || state.status?.branch || t('this branch')} → ${target}`
   const agentSel = h('select', { onChange: () => request('ai.settings', { agent: agentSel.value }).catch(() => {}) })
   const fillAgents = () => {
     clear(agentSel)
-    for (const a of agents) agentSel.append(h('option', { value: a.id, selected: a.id === agent, disabled: !a.available }, a.available ? a.name : `${a.name} (not installed)`))
+    for (const a of agents) agentSel.append(h('option', { value: a.id, selected: a.id === agent, disabled: !a.available }, a.available ? a.name : t('{name} (not installed)', { name: a.name })))
   }
   fillAgents()
   request('ai.settings', {}, 20000)
     .then((r) => ((agents = r.agents), (agent = r.agent), fillAgents()))
     .catch(() => {})
-  const instructions = h('textarea', { rows: 2, placeholder: 'Optional, e.g. "Write in Thai", "Focus on security", "We use React Query"' })
+  const instructions = h('textarea', { rows: 2, placeholder: t('Optional, e.g. "Write in Thai", "Focus on security", "We use React Query"') })
   instructions.value = prefs.instructions || ''
-  const out = h('div', { class: 'local-review-out' }, h('div', { class: 'dim local-review-empty' }, icon('sparkle', 14), `The review of ${what} appears here. Nothing is posted anywhere.`))
+  const out = h('div', { class: 'local-review-out' }, h('div', { class: 'dim local-review-empty' }, icon('sparkle', 14), t('The review of {what} appears here. Nothing is posted anywhere.', { what })))
   const status = h('div', { class: 'ai-status' })
   const verdictEl = h('span', { class: 'pill' })
   const genBtn = h('button', { type: 'button', class: 'btn sm ai-gen ai-review-btn', onClick: () => generate() })
   // the next step: from a menu, create the merge request; from the merge request (or Commit) window, back to it
-  const nextBtn = h('button', { type: 'button', class: 'btn', disabled: true, onClick: () => (close(), onNext ? onNext() : mergeRequestDialog(target, source)) }, icon(staged ? 'commit' : 'pr', 13), staged ? 'Back to commit' : onNext ? 'Back to the merge request' : 'Create merge request')
+  const nextBtn = h('button', { type: 'button', class: 'btn', disabled: true, onClick: () => (close(), onNext ? onNext() : mergeRequestDialog(target, source)) }, icon(staged ? 'commit' : 'pr', 13), staged ? t('Back to commit') : onNext ? t('Back to the merge request') : t('Create merge request'))
   let has = false
   let stopTick = () => {}
   const sync = (on, text, verdict) => {
@@ -5738,24 +5793,24 @@ async function localReviewModal({ source, target, staged = false, onNext } = {})
     stopTick()
     if (on) stopTick = aiTicker(status, agents.find((a) => a.id === agentSel.value)?.name || 'AI', what)
     else append(clear(status), [text || ''])
-    append(clear(genBtn), [on ? [icon('x', 13), 'Stop'] : [icon(has ? 'refresh' : 'sparkle', 13), has ? 'Review again' : 'Start review']])
+    append(clear(genBtn), [on ? [icon('x', 13), t('Stop')] : [icon(has ? 'refresh' : 'sparkle', 13), has ? t('Review again') : t('Start review')]])
     genBtn.className = `btn sm ai-gen ${on ? 'stop' : 'ai-review-btn'}`
     nextBtn.disabled = on || !has
     nextBtn.classList.toggle('primary', !on && has && verdict !== 'fix')
     if (verdict) {
       verdictEl.className = `pill local-verdict v-${verdict}`
-      verdictEl.textContent = { ready: 'Ready for review', fix: 'Fix first', notes: 'OK, with notes' }[verdict]
+      verdictEl.textContent = { ready: t('Ready for review'), fix: t('Fix first'), notes: t('OK, with notes') }[verdict]
     }
   }
   async function generate() {
     if (busy) {
       gen++
-      return sync(false, 'Stopped.')
+      return sync(false, t('Stopped.'))
     }
     const my = ++gen
     store.set('aiReviewPrefs', { instructions: instructions.value })
     const name = agents.find((a) => a.id === agentSel.value)?.name || 'AI'
-    sync(true, `${name} is reading ${what}…`)
+    sync(true, t('{name} is reading {what}…', { name, what }))
     out.classList.add('generating')
     const started = Date.now()
     try {
@@ -5763,8 +5818,10 @@ async function localReviewModal({ source, target, staged = false, onNext } = {})
       if (my !== gen) return
       has = true
       clear(out).append(reviewBody(r.review))
-      const note = r.left?.length ? ` ${r.left.length} big file${r.left.length > 1 ? 's were' : ' was'} left out: ${r.left.slice(0, 5).join(', ')}${r.left.length > 5 ? '…' : ''}.` : ''
-      sync(false, `Reviewed ${r.files} file${r.files === 1 ? '' : 's'} with ${name} in ${((Date.now() - started) / 1000).toFixed(1)}s.${note} Click a file:line to open it.`, r.verdict)
+      const leftFiles = r.left?.length ? r.left.slice(0, 5).join(', ') + (r.left.length > 5 ? '…' : '') : ''
+      const note = r.left?.length ? ' ' + (r.left.length > 1 ? t('{n} big files were left out: {files}.', { n: r.left.length, files: leftFiles }) : t('{n} big file was left out: {files}.', { n: r.left.length, files: leftFiles })) : ''
+      const secs = ((Date.now() - started) / 1000).toFixed(1)
+      sync(false, (r.files === 1 ? t('Reviewed {n} file with {name} in {secs}s.', { n: r.files, name, secs }) : t('Reviewed {n} files with {name} in {secs}s.', { n: r.files, name, secs })) + note + ' ' + t('Click a file:line to open it.'), r.verdict)
     } catch (e) {
       if (my !== gen) return
       sync(false, '')
@@ -5783,12 +5840,12 @@ async function localReviewModal({ source, target, staged = false, onNext } = {})
   const box = h(
     'div',
     { class: 'dialog ai-dialog local-review-dialog', role: 'dialog' },
-    h('div', { class: 'ai-title' }, h('span', { class: 'ai-badge' }, icon('sparkle', 14)), h('div', null, h('h3', null, staged ? 'Review your changes with AI' : 'Review with AI before the merge request'), h('p', null, staged ? 'Before you commit: the staged changes, or every change when nothing is staged' : `${source || state.status?.branch} → ${target}: the changes the merge request will show`))),
-    h('div', { class: 'ai-row' }, h('div', { class: 'field grow' }, h('label', null, 'Agent'), agentSel)),
-    h('div', { class: 'field' }, h('label', null, 'Instructions'), instructions),
-    h('div', { class: 'field' }, h('div', { class: 'ai-msg-head' }, h('label', { class: 'row' }, 'Review', verdictEl), genBtn), out),
+    h('div', { class: 'ai-title' }, h('span', { class: 'ai-badge' }, icon('sparkle', 14)), h('div', null, h('h3', null, staged ? t('Review your changes with AI') : t('Review with AI before the merge request')), h('p', null, staged ? t('Before you commit: the staged changes, or every change when nothing is staged') : t('{source} → {target}: the changes the merge request will show', { source: source || state.status?.branch, target })))),
+    h('div', { class: 'ai-row' }, h('div', { class: 'field grow' }, h('label', null, t('Agent')), agentSel)),
+    h('div', { class: 'field' }, h('label', null, t('Instructions')), instructions),
+    h('div', { class: 'field' }, h('div', { class: 'ai-msg-head' }, h('label', { class: 'row' }, t('Review'), verdictEl), genBtn), out),
     status,
-    h('div', { class: 'buttons' }, h('button', { type: 'button', class: 'btn', onClick: () => !busy && close() }, 'Close'), h('span', { class: 'grow dim local-review-note', title: 'Runs on this machine with your AI CLI. Nothing is posted to GitHub or GitLab.' }, 'Nothing is posted'), nextBtn)
+    h('div', { class: 'buttons' }, h('button', { type: 'button', class: 'btn', onClick: () => !busy && close() }, t('Close')), h('span', { class: 'grow dim local-review-note', title: t('Runs on this machine with your AI CLI. Nothing is posted to GitHub or GitLab.') }, t('Nothing is posted')), nextBtn)
   )
   const overlay = h('div', { class: 'overlay', onMousedown: (e) => e.target === overlay && !busy && close() }, box)
   mountOverlay(overlay, close)
@@ -5803,17 +5860,17 @@ async function localReviewModal({ source, target, staged = false, onNext } = {})
 /** A branch name short enough for a menu line: the middle gives way, both ends stay readable. */
 const nm = (b, max = 30) => (b.length > max ? b.slice(0, Math.ceil(max / 2) - 1) + '…' + b.slice(-Math.floor(max / 2) + 1) : b)
 /** Merge in menus, always written source → target, the way git and GitLab say it. */
-const mergeLabel = (src, dst) => `Merge ${nm(src)} → ${nm(dst)}`
+const mergeLabel = (src, dst) => t('Merge {source} → {target}', { source: nm(src), target: nm(dst) })
 /** Merge request with another branch, in either direction, each written source → target. */
 function mrBoth(other, cur) {
   if (!cur || !other || other === cur) return null
   return {
-    label: 'Merge request',
+    label: t('Merge request'),
     icon: 'pr',
     cls: 'mr-item',
     items: [
-      { label: `${nm(cur)} → ${nm(other)}…`, full: `Merge request: ${cur} → ${other}`, icon: 'pr', cls: 'mr-item', dir: [cur, other], onClick: () => mergeRequestDialog(other) },
-      { label: `${nm(other)} → ${nm(cur)}…`, full: `Merge request: ${other} → ${cur}`, icon: 'pr', cls: 'mr-item', dir: [other, cur], onClick: () => mergeRequestDialog(cur, other) }
+      { label: `${nm(cur)} → ${nm(other)}…`, full: t('Merge request: {source} → {target}', { source: cur, target: other }), icon: 'pr', cls: 'mr-item', dir: [cur, other], onClick: () => mergeRequestDialog(other) },
+      { label: `${nm(other)} → ${nm(cur)}…`, full: t('Merge request: {source} → {target}', { source: other, target: cur }), icon: 'pr', cls: 'mr-item', dir: [other, cur], onClick: () => mergeRequestDialog(cur, other) }
     ]
   }
 }
@@ -5823,13 +5880,13 @@ function mrItem(local, remote, cur) {
   const targets = [...new Set([...local, ...remote.filter((r) => !r.endsWith('/HEAD')).map((r) => r.replace(/^[^/]+\//, ''))])].filter((b) => b !== cur)
   if (!targets.length) return null
   if (targets.length === 1) return mrBoth(targets[0], cur)
-  return { label: 'Merge request', icon: 'pr', cls: 'mr-item', items: targets.flatMap((b) => [{ label: `${nm(cur)} → ${nm(b)}…`, full: `Merge request: ${cur} → ${b}`, icon: 'pr', cls: 'mr-item', dir: [cur, b], onClick: () => mergeRequestDialog(b) }, { label: `${nm(b)} → ${nm(cur)}…`, full: `Merge request: ${b} → ${cur}`, icon: 'pr', cls: 'mr-item', dir: [b, cur], onClick: () => mergeRequestDialog(cur, b) }]) }
+  return { label: t('Merge request'), icon: 'pr', cls: 'mr-item', items: targets.flatMap((b) => [{ label: `${nm(cur)} → ${nm(b)}…`, full: t('Merge request: {source} → {target}', { source: cur, target: b }), icon: 'pr', cls: 'mr-item', dir: [cur, b], onClick: () => mergeRequestDialog(b) }, { label: `${nm(b)} → ${nm(cur)}…`, full: t('Merge request: {source} → {target}', { source: b, target: cur }), icon: 'pr', cls: 'mr-item', dir: [b, cur], onClick: () => mergeRequestDialog(cur, b) }]) }
 }
 /**
  * Pick people (assignees, reviewers): chips plus a search box with a list of the project's members.
  * `value()` gives [{ id, username }].
  */
-function peoplePicker(placeholder, { me, meLabel = 'Assign to me' } = {}) {
+function peoplePicker(placeholder, { me, meLabel = t('Assign to me') } = {}) {
   let people = []
   let chosen = []
   let open = false
@@ -5847,15 +5904,15 @@ function peoplePicker(placeholder, { me, meLabel = 'Assign to me' } = {}) {
   const avatar = (p) => h('span', { class: 'pp-av pp-initial' }, (p.name || p.username || '?')[0].toUpperCase())
   function drawChips() {
     clear(chips)
-    for (const c of chosen) chips.append(h('span', { class: 'pp-chip', title: `@${c.username}` }, avatar(c), h('span', null, c.name || c.username), h('button', { type: 'button', class: 'pp-x', title: `Remove ${c.username}`, onClick: () => remove(c) }, '×')))
+    for (const c of chosen) chips.append(h('span', { class: 'pp-chip', title: `@${c.username}` }, avatar(c), h('span', null, c.name || c.username), h('button', { type: 'button', class: 'pp-x', title: t('Remove {name}', { name: c.username }), onClick: () => remove(c) }, '×')))
     meBtn.classList.toggle('hidden', !me || chosen.some((c) => c.id === me.id))
   }
   function drawList() {
     const m = matches()
     active = Math.min(active, Math.max(0, m.length - 1))
     clear(list)
-    if (!people.length) list.append(h('div', { class: 'pp-empty dim' }, 'No members found'))
-    else if (!m.length) list.append(h('div', { class: 'pp-empty dim' }, 'No match'))
+    if (!people.length) list.append(h('div', { class: 'pp-empty dim' }, t('No members found')))
+    else if (!m.length) list.append(h('div', { class: 'pp-empty dim' }, t('No match')))
     m.forEach((p, i) =>
       list.append(
         h('div', { class: `pp-item ${i === active ? 'on' : ''}`, role: 'option', onMousedown: (e) => (e.preventDefault(), add(p)) }, avatar(p), h('span', { class: 'pp-name' }, p.name), h('span', { class: 'dim mono' }, `@${p.username}`))
@@ -5916,42 +5973,42 @@ async function mergeRequestDialog(target, source, swapped) {
   } finally {
     setBusy(-1)
   }
-  if (info.source === info.target) return toast(`You are on ${info.target}. Check out the branch you want to merge, then try again.`, 'error')
+  if (info.source === info.target) return toast(t('You are on {branch}. Check out the branch you want to merge, then try again.', { branch: info.target }), 'error')
   // Nothing to merge this way but commits the other way: the person meant the reverse (e.g. on main,
   // right-clicking a feature branch). Flip once, and say so.
   if (!info.commits.length && info.reverse > 0 && !swapped) {
-    toast(`${info.source} has nothing new for ${info.target}, so this is ${info.target} → ${info.source} instead.`, 'ok', 5000)
+    toast(t('{source} has nothing new for {target}, so this is {target} → {source} instead.', { source: info.source, target: info.target }), 'ok', 5000)
     return mergeRequestDialog(info.source, info.target, true)
   }
-  if (!info.commits.length) return toast(`${info.source} and ${info.target} have the same commits: there is nothing to merge.`, 'error')
+  if (!info.commits.length) return toast(t('{source} and {target} have the same commits: there is nothing to merge.', { source: info.source, target: info.target }), 'error')
   const isGh = info.kind === 'github'
-  const noun = isGh ? 'pull request' : 'merge request'
+  const noun = isGh ? t('pull request') : t('merge request')
   const service = isGh ? 'GitHub' : info.host
   const repo = state.repo
   const humanize = (b) => b.replace(/^[\w-]+\//, '').replace(/[-_]+/g, ' ').replace(/^./, (c) => c.toUpperCase())
 
   const title = h('input', { type: 'text' })
   title.value = info.defaults?.title ?? (info.commits.length === 1 ? info.commits[0] : humanize(info.source))
-  const body = h('textarea', { rows: 8, placeholder: 'What changed and why' })
+  const body = h('textarea', { rows: 8, placeholder: t('What changed and why') })
   body.value = info.defaults?.body ?? info.commits.map((c) => `- ${c}`).join('\n')
   const draft = h('input', { type: 'checkbox' })
   draft.checked = !!info.defaults?.draft
   // People and merge options, as on the service's own form. Members load in the background.
   const peopleKey = `mrPeople:${info.host}/${info.path || ''}`
   const remembered = store.get(peopleKey, null)
-  const assignees = peoplePicker('Search…')
-  const reviewers = peoplePicker('Search…', { meLabel: 'Add me' })
+  const assignees = peoplePicker(t('Search…'))
+  const reviewers = peoplePicker(t('Search…'), { meLabel: t('Add me') })
   if (remembered?.reviewers) reviewers.set(remembered.reviewers)
   const removeSource = h('input', { type: 'checkbox' })
   removeSource.checked = true // GitLab's default for a new merge request
   const squash = h('input', { type: 'checkbox' })
-  const peopleNote = h('div', { class: 'dim pp-note' }, h('span', { class: 'spinner' }), 'Loading members…')
-  const gitlabOpts = !isGh && h('div', { class: 'mr-opts' }, h('label', { class: 'check' }, removeSource, 'Delete source branch when merge request is accepted'), h('label', { class: 'check' }, squash, 'Squash commits when merge request is accepted'))
+  const peopleNote = h('div', { class: 'dim pp-note' }, h('span', { class: 'spinner' }), t('Loading members…'))
+  const gitlabOpts = !isGh && h('div', { class: 'mr-opts' }, h('label', { class: 'check' }, removeSource, t('Delete source branch when merge request is accepted')), h('label', { class: 'check' }, squash, t('Squash commits when merge request is accepted')))
   request('mr.people', { repo, query: '' }, 30000).then(
     (r) => {
       peopleNote.remove()
       if (!r.via) {
-        const msg = h('div', { class: 'dim pp-note' }, `Sign in to ${info.tools.cli} or Git to pick people here, or choose them on the web page with Open link`)
+        const msg = h('div', { class: 'dim pp-note' }, t('Sign in to {cli} or Git to pick people here, or choose them on the web page with Open link', { cli: info.tools.cli }))
         assignees.el.before(msg)
         return
       }
@@ -5964,23 +6021,23 @@ async function mergeRequestDialog(target, source, swapped) {
         squash.disabled = !!r.defaults.squashLocked
       }
     },
-    (e) => ((peopleNote.textContent = `Could not load members: ${e.message}`), null)
+    (e) => ((peopleNote.textContent = t('Could not load members: {error}', { error: e.message })), null)
   )
   const note = h('div', { class: 'mr-status' })
   const linkBtn = h('button', { type: 'button', class: 'btn' })
   const createBtn = h('button', { type: 'button', class: 'btn primary' })
 
   const drawButtons = () => {
-    clear(linkBtn).append(icon('open', 13), 'Open link')
-    linkBtn.title = `Push, then open ${service} with this filled in; press Create there. Nothing to install.`
+    clear(linkBtn).append(icon('open', 13), t('Open link'))
+    linkBtn.title = t('Push, then open {service} with this filled in; press Create there. Nothing to install.', { service })
     const can = !!info.tools.via
-    clear(createBtn).append(icon('merge', 13), can ? 'Create now' : `Set up & create`)
-    createBtn.title = can ? `Push and create the ${noun} on ${service} right here` : `Needs ${info.tools.cli}, set up once`
+    clear(createBtn).append(icon('merge', 13), can ? t('Create now') : t('Set up & create'))
+    createBtn.title = can ? t('Push and create the {noun} on {service} right here', { noun, service }) : t('Needs {cli}, set up once', { cli: info.tools.cli })
     clear(note)
     if (can)
       note.append(
         icon('check', 13),
-        h('span', null, h('b', null, 'Create now'), ` makes the ${noun} on ${service} directly${info.tools.via === 'git' ? ', with the login Git already uses' : ` with ${info.tools.cli}`}. `, h('b', null, 'Open link'), ' opens it in your browser instead.')
+        h('span', null, h('b', null, t('Create now')), ' ', info.tools.via === 'git' ? t('makes the {noun} on {service} directly, with the login Git already uses.', { noun, service }) : t('makes the {noun} on {service} directly with {cli}.', { noun, service, cli: info.tools.cli }), ' ', h('b', null, t('Open link')), ' ', t('opens it in your browser instead.'))
       )
     else
       note.append(
@@ -5988,14 +6045,14 @@ async function mergeRequestDialog(target, source, swapped) {
         h(
           'div',
           { class: 'grow' },
-          h('div', null, h('b', null, 'Open link'), ` works right away: ${service} opens with this filled in, press Create there.`),
-          h('div', { class: 'dim' }, h('b', null, 'Create now'), ` needs ${info.tools.cli}${info.tools.installed ? ' signed in' : ''}. Set it up once:`),
+          h('div', null, h('b', null, t('Open link')), ' ', t('works right away: {service} opens with this filled in, press Create there.', { service })),
+          h('div', { class: 'dim' }, h('b', null, t('Create now')), ' ', info.tools.installed ? t('needs {cli} signed in. Set it up once:', { cli: info.tools.cli }) : t('needs {cli}. Set it up once:', { cli: info.tools.cli })),
           h(
             'div',
             { class: 'mr-steps' },
-            !info.tools.installed && info.tools.canInstall && h('button', { type: 'button', class: 'btn sm', onClick: () => setup(isGh ? 'gh-install' : 'glab-install') }, icon('download', 12), `1. Install ${info.tools.cli}`),
-            h('button', { type: 'button', class: 'btn sm', disabled: !info.tools.installed, onClick: () => setup(isGh ? 'gh-login' : 'glab-login') }, icon('user', 12), `${info.tools.installed ? '' : '2. '}Sign in to ${service}`),
-            h('button', { type: 'button', class: 'btn sm', onClick: recheck }, icon('refresh', 12), 'Check again')
+            !info.tools.installed && info.tools.canInstall && h('button', { type: 'button', class: 'btn sm', onClick: () => setup(isGh ? 'gh-install' : 'glab-install') }, icon('download', 12), t('1. Install {cli}', { cli: info.tools.cli })),
+            h('button', { type: 'button', class: 'btn sm', disabled: !info.tools.installed, onClick: () => setup(isGh ? 'gh-login' : 'glab-login') }, icon('user', 12), info.tools.installed ? t('Sign in to {service}', { service }) : t('2. Sign in to {service}', { service })),
+            h('button', { type: 'button', class: 'btn sm', onClick: recheck }, icon('refresh', 12), t('Check again'))
           )
         )
       )
@@ -6003,7 +6060,7 @@ async function mergeRequestDialog(target, source, swapped) {
   async function setup(step) {
     try {
       const r = await request('mr.setup', { repo, step }, 30000)
-      toast(r.ran ? `Running in a new terminal: ${r.command}\nFollow it there, then press "Check again".` : `Run this in a terminal, then press "Check again":\n${r.command}`, 'ok', 10000)
+      toast(r.ran ? t('Running in a new terminal: {command}\nFollow it there, then press "Check again".', { command: r.command }) : t('Run this in a terminal, then press "Check again":\n{command}', { command: r.command }), 'ok', 10000)
     } catch (e) {
       toast(e.message, 'error')
     }
@@ -6012,7 +6069,7 @@ async function mergeRequestDialog(target, source, swapped) {
     try {
       info = await request('mr.info', { repo, target, source: info.source }, 30000)
       drawButtons()
-      if (info.tools.via) toast(`${info.tools.via === 'git' ? 'Your Git login' : info.tools.cli} is ready: Create now makes it in one click.`)
+      if (info.tools.via) toast(info.tools.via === 'git' ? t('Your Git login is ready: Create now makes it in one click.') : t('{cli} is ready: Create now makes it in one click.', { cli: info.tools.cli }))
     } catch (e) {
       toast(e.message, 'error')
     }
@@ -6029,7 +6086,7 @@ async function mergeRequestDialog(target, source, swapped) {
   const softClose = async () => {
     if (busy) return
     if (!sent && (title.value !== original.title || body.value !== original.body)) {
-      if (!(await confirmBox(`Discard this ${noun}?`, 'The title and description you edited are lost.', 'Discard', true))) return
+      if (!(await confirmBox(t('Discard this {noun}?', { noun }), t('The title and description you edited are lost.'), t('Discard'), true))) return
     }
     close()
   }
@@ -6041,9 +6098,9 @@ async function mergeRequestDialog(target, source, swapped) {
       h(
         'div',
         { class: 'buttons' },
-        h('button', { type: 'button', class: 'btn', onClick: () => copy(url) }, icon('copy', 13), 'Copy link'),
+        h('button', { type: 'button', class: 'btn', onClick: () => copy(url) }, icon('copy', 13), t('Copy link')),
         h('span', { class: 'grow' }),
-        h('button', { type: 'button', class: 'btn', onClick: close }, 'Close'),
+        h('button', { type: 'button', class: 'btn', onClick: close }, t('Close')),
         h('button', { type: 'button', class: 'btn primary', onClick: () => openLink(url) }, icon('open', 13), openLabel)
       )
     )
@@ -6057,19 +6114,19 @@ async function mergeRequestDialog(target, source, swapped) {
     const btn = web ? linkBtn : createBtn
     busy = true
     linkBtn.disabled = createBtn.disabled = true
-    clear(btn).append(h('span', { class: 'spinner' }), info.needsPush ? 'Pushing…' : web ? 'Opening…' : 'Creating…')
+    clear(btn).append(h('span', { class: 'spinner' }), info.needsPush ? t('Pushing…') : web ? t('Opening…') : t('Creating…'))
     try {
       const who = { assignees: assignees.value(), reviewers: reviewers.value(), ...(!isGh ? { removeSource: removeSource.checked, squash: squash.checked } : {}) }
       store.set(peopleKey, { reviewers: who.reviewers, assignMe: who.assignees.length > 0 })
       const r = await request('mr.create', { repo, target: info.target, source: info.source, title: title.value, body: body.value, draft: draft.checked, web, ...who }, 120000)
       if (r.warning) toast(r.warning, 'error', 8000)
-      const pushed = r.pushed ? `${info.source} pushed to ${info.remote}. ` : ''
+      const pushed = r.pushed ? t('{branch} pushed to {remote}.', { branch: info.source, remote: info.remote }) + ' ' : ''
       if (web && r.opened) {
         close()
-        toast(`${pushed}${service} is open in your browser: check the ${noun} and press Create.`, 'ok', 6000)
-      } else if (web) finished(`Ready on ${service}`, r.url, `${pushed}Open the page and press Create.`, `Open ${service}`)
-      else if (r.created) finished(`${noun[0].toUpperCase() + noun.slice(1)} created`, r.url, `${pushed}${info.source} → ${info.target}`, `Open ${noun}`)
-      else finished(`A ${noun} for ${info.source} already exists`, r.url, pushed, `Open ${noun}`)
+        toast(pushed + t('{service} is open in your browser: check the {noun} and press Create.', { service, noun }), 'ok', 6000)
+      } else if (web) finished(t('Ready on {service}', { service }), r.url, pushed + t('Open the page and press Create.'), t('Open {service}', { service }))
+      else if (r.created) finished(isGh ? t('Pull request created') : t('Merge request created'), r.url, `${pushed}${info.source} → ${info.target}`, t('Open {noun}', { noun }))
+      else finished(t('A {noun} for {branch} already exists', { noun, branch: info.source }), r.url, pushed, t('Open {noun}', { noun }))
       state.history.stale = true
       refreshAll()
     } catch (e) {
@@ -6077,7 +6134,7 @@ async function mergeRequestDialog(target, source, swapped) {
       drawButtons()
       if (!web && (e?.data?.kind === 'git-login-denied' || /git login/i.test(e.message))) {
         // the saved Git login may push but not create merge requests: fall back to the web page
-        toast(`${e.message} Opening ${service} in your browser instead.`, 'error', 7000)
+        toast(e.message + ' ' + t('Opening {service} in your browser instead.', { service }), 'error', 7000)
         busy = false
         return submit(true)
       }
@@ -6092,27 +6149,27 @@ async function mergeRequestDialog(target, source, swapped) {
   const form = h(
     'div',
     { class: 'mr-form' },
-    h('div', { class: 'mr-route' }, h('span', { class: 'ref' }, icon('branch', 10), h('span', { class: 'ref-t' }, info.source)), icon('right', 14), h('span', { class: 'ref' }, icon('branch', 10), h('span', { class: 'ref-t' }, info.target)), h('button', { type: 'button', class: 'icon-btn', disabled: !(info.reverse > 0), title: info.reverse > 0 ? `Swap: ${info.target} → ${info.source} (${info.reverse} commit${info.reverse > 1 ? 's' : ''})` : `Can't swap: ${info.target} has nothing that ${info.source} lacks`, onClick: () => info.reverse > 0 && (close(), mergeRequestDialog(info.source, info.target, true)) }, icon('swap', 14))),
-    info.needsPush && h('div', { class: 'dim mr-note' }, icon('push', 12), `${info.source} ${info.upstream ? 'has commits not on' : 'is not on'} ${info.remote} yet; it is pushed first.`),
+    h('div', { class: 'mr-route' }, h('span', { class: 'ref' }, icon('branch', 10), h('span', { class: 'ref-t' }, info.source)), icon('right', 14), h('span', { class: 'ref' }, icon('branch', 10), h('span', { class: 'ref-t' }, info.target)), h('button', { type: 'button', class: 'icon-btn', disabled: !(info.reverse > 0), title: info.reverse > 0 ? (info.reverse > 1 ? t('Swap: {target} → {source} ({n} commits)', { target: info.target, source: info.source, n: info.reverse }) : t('Swap: {target} → {source} ({n} commit)', { target: info.target, source: info.source, n: info.reverse })) : t("Can't swap: {target} has nothing that {source} lacks", { target: info.target, source: info.source }), onClick: () => info.reverse > 0 && (close(), mergeRequestDialog(info.source, info.target, true)) }, icon('swap', 14))),
+    info.needsPush && h('div', { class: 'dim mr-note' }, icon('push', 12), info.upstream ? t('{branch} has commits not on {remote} yet; it is pushed first.', { branch: info.source, remote: info.remote }) : t('{branch} is not on {remote} yet; it is pushed first.', { branch: info.source, remote: info.remote })),
     h(
       'div',
       { class: 'field' },
       h(
         'label',
         { class: 'row' },
-        'Title',
+        t('Title'),
         h('span', { class: 'grow' }),
         h(
           'button',
           {
             type: 'button',
             class: 'btn sm',
-            title: 'Write the title and description from the whole branch with AI',
+            title: t('Write the title and description from the whole branch with AI'),
             onClick: async (e) => {
               const b = e.currentTarget
               b.disabled = true
               const t0 = Date.now()
-              const tick = () => append(clear(b), [h('span', { class: 'ai-dots' }, h('i'), h('i'), h('i')), `AI is writing… ${Math.floor((Date.now() - t0) / 1000)}s`])
+              const tick = () => append(clear(b), [h('span', { class: 'ai-dots' }, h('i'), h('i'), h('i')), t('AI is writing… {n}s', { n: Math.floor((Date.now() - t0) / 1000) })])
               tick()
               const timer = setInterval(tick, 1000)
               title.classList.add('generating')
@@ -6130,25 +6187,25 @@ async function mergeRequestDialog(target, source, swapped) {
                 body.classList.remove('generating')
                 title.readOnly = body.readOnly = false
                 b.disabled = false
-                append(clear(b), [icon('wand', 12), 'Write with AI'])
+                append(clear(b), [icon('wand', 12), t('Write with AI')])
               }
             }
           },
           icon('wand', 12),
-          'Write with AI'
+          t('Write with AI')
         )
       ),
       aiWrap(title)
     ),
-    h('div', { class: 'field' }, h('label', null, 'Description'), aiWrap(body)),
-    h('div', { class: 'mr-people' }, peopleNote, h('div', { class: 'field' }, h('label', { class: 'row' }, 'Assignees', h('span', { class: 'grow' }), assignees.meBtn), assignees.el), h('div', { class: 'field' }, h('label', { class: 'row' }, isGh ? 'Reviewers (Create now only)' : 'Reviewers', h('span', { class: 'grow' }), reviewers.meBtn), reviewers.el)),
+    h('div', { class: 'field' }, h('label', null, t('Description')), aiWrap(body)),
+    h('div', { class: 'mr-people' }, peopleNote, h('div', { class: 'field' }, h('label', { class: 'row' }, t('Assignees'), h('span', { class: 'grow' }), assignees.meBtn), assignees.el), h('div', { class: 'field' }, h('label', { class: 'row' }, isGh ? t('Reviewers (Create now only)') : t('Reviewers'), h('span', { class: 'grow' }), reviewers.meBtn), reviewers.el)),
     gitlabOpts,
-    h('label', { class: 'check' }, draft, 'Draft (Create now only)'),
+    h('label', { class: 'check' }, draft, t('Draft (Create now only)')),
     note,
-    h('div', { class: 'buttons' }, h('button', { type: 'button', class: 'btn', onClick: close }, 'Cancel'), h('span', { class: 'grow' }), h('button', { type: 'button', class: 'btn ai-review-btn', title: 'Let AI review these changes before anyone else sees them', onClick: () => localReviewModal({ source: info.source, target: info.target, onNext: () => {} }) }, icon('sparkle', 13), 'Review with AI first'), linkBtn, createBtn)
+    h('div', { class: 'buttons' }, h('button', { type: 'button', class: 'btn', onClick: close }, t('Cancel')), h('span', { class: 'grow' }), h('button', { type: 'button', class: 'btn ai-review-btn', title: t('Let AI review these changes before anyone else sees them'), onClick: () => localReviewModal({ source: info.source, target: info.target, onNext: () => {} }) }, icon('sparkle', 13), t('Review with AI first')), linkBtn, createBtn)
   )
   drawButtons()
-  const box = h('div', { class: 'dialog mr-dialog', role: 'dialog' }, h('h3', null, `New ${noun}`), form)
+  const box = h('div', { class: 'dialog mr-dialog', role: 'dialog' }, h('h3', null, isGh ? t('New pull request') : t('New merge request')), form)
   const overlay = h('div', { class: 'overlay', onMousedown: (e) => e.target === overlay && softClose() }, box)
   mountOverlay(overlay, close)
   document.addEventListener('keydown', onKey)
@@ -6196,8 +6253,8 @@ const forMe = (it) => isOpenMr(it) && (it.roles.includes('review') || it.roles.i
  * running, queued). All: every merge request of this repository, open and merged.
  */
 const RV_TABS = [
-  ['todo', 'Open', (it) => (isOpenMr(it) && (forMe(it) || isMine(it) || it.roles.includes('repo'))) || mergedStillRunning(it)],
-  ['all', 'All', () => true]
+  ['todo', t('Open'), (it) => (isOpenMr(it) && (forMe(it) || isMine(it) || it.roles.includes('repo'))) || mergedStillRunning(it)],
+  ['all', t('All'), () => true]
 ]
 const ciBusy = (it) => it.ci === 'running' || it.ci === 'pending'
 /** Merged in the last hours but its pipeline still runs: it stays in Review until that is done. */
@@ -6275,12 +6332,12 @@ async function viewReviews() {
       words.every((w) => `${it.title} ${it.repo} ${it.author} ${it.source || ''} ${it.number} ${(it.labels || []).join(' ')}`.toLowerCase().includes(w))
   )
   const where = data.repoPath && filter === 'all'
-    ? h('span', { class: 'rv-scope-note dim', title: `${data.repoHost}/${data.repoPath}` }, icon('branch', 11), `${data.repoPath.split('/').pop()} only`)
+    ? h('span', { class: 'rv-scope-note dim', title: `${data.repoHost}/${data.repoPath}` }, icon('branch', 11), t('{repo} only', { repo: data.repoPath.split('/').pop() }))
     : data.repoPath && h(
     'div',
     { class: 'segmented' },
     data.repoPath && h('button', { class: allRepos ? '' : 'on', title: `${data.repoHost}/${data.repoPath}`, onClick: () => (store.set('reviewsAllRepos', false), renderView({ force: true })) }, icon('branch', 11), data.repoPath.split('/').pop()),
-    h('button', { class: allRepos ? 'on' : '', title: 'Every repository on GitHub and GitLab you are signed in to', onClick: () => (store.set('reviewsAllRepos', true), renderView({ force: true })) }, 'All repos')
+    h('button', { class: allRepos ? 'on' : '', title: t('Every repository on GitHub and GitLab you are signed in to'), onClick: () => (store.set('reviewsAllRepos', true), renderView({ force: true })) }, t('All repos'))
   )
   // GitLab-style tabs with counts: To review (waiting for me), Opened by me, All open
   const seg = h(
@@ -6293,7 +6350,7 @@ async function viewReviews() {
       // All: every one this repository has, when GitLab told how many were merged (fetched when opened)
       if (k === 'all' && data.mergedTotal != null) n = pool.filter(isOpenMr).length + Math.max(data.mergedTotal, pool.filter((it) => !isOpenMr(it)).length)
       const hot = k === 'todo' && pool.some(needsMe)
-      return h('button', { class: filter === k ? 'on' : '', title: k === 'todo' ? 'Every open merge request of the repositories you work in, and the ones asked of you anywhere, until merged' : 'Every merge request of this repository, open and merged', onClick: () => ((state.reviewFilter = k), state.rvSel.clear(), renderView({ force: true })) }, l, h('span', { class: `rv-n ${hot ? 'hot' : ''}` }, String(n)))
+      return h('button', { class: filter === k ? 'on' : '', title: k === 'todo' ? t('Every open merge request of the repositories you work in, and the ones asked of you anywhere, until merged') : t('Every merge request of this repository, open and merged'), onClick: () => ((state.reviewFilter = k), state.rvSel.clear(), renderView({ force: true })) }, l, h('span', { class: `rv-n ${hot ? 'hot' : ''}` }, String(n)))
     })
   )
   root.append(
@@ -6307,11 +6364,11 @@ async function viewReviews() {
         h(
           'div',
           { class: 'segmented rv-who' },
-          [['all', 'Everyone', 'Every open one'], ['me', 'For me', 'Asked to review or assigned to me'], ['mine', 'Mine', 'Opened by me']].map(([k, l, t]) => h('button', { class: who === k ? 'on' : '', title: t, onClick: () => (store.set('rvWho', k), state.rvSel.clear(), renderView({ force: true })) }, l, k === 'me' && scoped.some(needsMe) ? h('span', { class: 'rv-n hot' }, String(scoped.filter(needsMe).length)) : null))
+          [['all', t('Everyone'), t('Every open one')], ['me', t('For me'), t('Asked to review or assigned to me')], ['mine', t('Mine'), t('Opened by me')]].map(([k, l, tip]) => h('button', { class: who === k ? 'on' : '', title: tip, onClick: () => (store.set('rvWho', k), state.rvSel.clear(), renderView({ force: true })) }, l, k === 'me' && scoped.some(needsMe) ? h('span', { class: 'rv-n hot' }, String(scoped.filter(needsMe).length)) : null))
         ),
       h('span', { class: 'grow' }),
-      h('span', { class: 'dim rv-updated', style: { fontSize: '11.5px' } }, `Updated ${ago(data.at / 1000)}`),
-      h('button', { class: 'btn sm', onClick: async (e) => ((e.currentTarget.disabled = true), await loadReviews(true).catch((err) => toast(err.message, 'error')), renderView({ force: true })) }, icon('refresh', 12), 'Refresh')
+      h('span', { class: 'dim rv-updated', style: { fontSize: '11.5px' } }, t('Updated {when}', { when: ago(data.at / 1000) })),
+      h('button', { class: 'btn sm', onClick: async (e) => ((e.currentTarget.disabled = true), await loadReviews(true).catch((err) => toast(err.message, 'error')), renderView({ force: true })) }, icon('refresh', 12), t('Refresh'))
     )
   )
 
@@ -6321,7 +6378,7 @@ async function viewReviews() {
   const rvSearch = (rvSearchBox ||= h('input', {
     type: 'text',
     class: 'rv-search',
-    placeholder: 'Filter by title, author, branch, number…',
+    placeholder: t('Filter by title, author, branch, number…'),
     onInput: (e) => {
       clearTimeout(rvSearchBox._t)
       rvSearchBox._t = setTimeout(() => ((state.rvQ.text = e.target.value), renderView({ force: true })), 200)
@@ -6338,9 +6395,9 @@ async function viewReviews() {
       'div',
       { class: 'rv-filters' },
       h('div', { class: 'rv-search-wrap' }, icon('search', 12), liveSlot(rvSearch)),
-      pickSel('repo', 'All projects', allRepos ? repos : []),
-      pickSel('label', 'All labels', labels),
-      active && h('button', { class: 'btn sm', onClick: () => ((state.rvQ = { text: '', repo: '', label: '' }), (rvSearch.value = ''), renderView({ force: true })) }, icon('x', 12), 'Clear filters')
+      pickSel('repo', t('All projects'), allRepos ? repos : []),
+      pickSel('label', t('All labels'), labels),
+      active && h('button', { class: 'btn sm', onClick: () => ((state.rvQ = { text: '', repo: '', label: '' }), (rvSearch.value = ''), renderView({ force: true })) }, icon('x', 12), t('Clear filters'))
     )
   )
 
@@ -6348,21 +6405,21 @@ async function viewReviews() {
   for (const p of data.providers.filter((x) => !x.signedIn)) {
     const step = (name) => () =>
       request('reviews.setup', { host: p.host, step: name }, 30000).then(
-        (r) => toast(r.ran ? `Running in a new terminal: ${r.command}\nFollow it there, then press Refresh.` : `Run this in a terminal, then press Refresh:\n${r.command}`, 'ok', 10000),
+        (r) => toast(r.ran ? t('Running in a new terminal: {command}\nFollow it there, then press Refresh.', { command: r.command }) : t('Run this in a terminal, then press Refresh:\n{command}', { command: r.command }), 'ok', 10000),
         (e) => toast(e.message, 'error')
       )
     root.append(
       h(
         'div',
         { class: 'card setup-card' },
-        h('div', { class: 'row' }, icon('globe', 14), h('strong', null, `Connect ${p.host}`)),
-        h('div', { class: 'dim' }, `See and approve its ${p.provider === 'github' ? 'pull' : 'merge'} requests here. Needs ${p.cli}, set up once.`),
+        h('div', { class: 'row' }, icon('globe', 14), h('strong', null, t('Connect {host}', { host: p.host }))),
+        h('div', { class: 'dim' }, p.provider === 'github' ? t('See and approve its pull requests here. Needs {cli}, set up once.', { cli: p.cli }) : t('See and approve its merge requests here. Needs {cli}, set up once.', { cli: p.cli })),
         h(
           'div',
           { class: 'actions-wrap' },
-          !p.installed && p.canInstall && h('button', { class: 'btn sm', onClick: step(`${p.cli}-install`) }, icon('download', 12), `1. Install ${p.cli}`),
-          h('button', { class: 'btn sm', disabled: !p.installed, onClick: step(`${p.cli}-login`) }, icon('user', 12), `${p.installed ? '' : '2. '}Sign in`),
-          h('button', { class: 'btn sm', onClick: async () => (await loadReviews(true).catch((e) => toast(e.message, 'error')), renderView({ force: true })) }, icon('refresh', 12), 'Check again')
+          !p.installed && p.canInstall && h('button', { class: 'btn sm', onClick: step(`${p.cli}-install`) }, icon('download', 12), t('1. Install {cli}', { cli: p.cli })),
+          h('button', { class: 'btn sm', disabled: !p.installed, onClick: step(`${p.cli}-login`) }, icon('user', 12), p.installed ? t('Sign in') : t('2. Sign in')),
+          h('button', { class: 'btn sm', onClick: async () => (await loadReviews(true).catch((e) => toast(e.message, 'error')), renderView({ force: true })) }, icon('refresh', 12), t('Check again'))
         )
       )
     )
@@ -6377,7 +6434,7 @@ async function viewReviews() {
   const items = scoped.filter(fn).sort((a, b) => rank(b) - rank(a))
   const openItems = items.filter(isOpenMr)
   for (const u of [...state.rvSel]) if (!openItems.some((it) => it.url === u)) state.rvSel.delete(u)
-  const selAll = h('input', { type: 'checkbox', class: 'rv-check', title: 'Select all', 'aria-label': 'Select all' })
+  const selAll = h('input', { type: 'checkbox', class: 'rv-check', title: t('Select all'), 'aria-label': t('Select all') })
   selAll.checked = openItems.length > 0 && openItems.every((it) => state.rvSel.has(it.url))
   selAll.indeterminate = !selAll.checked && openItems.some((it) => state.rvSel.has(it.url))
   selAll.addEventListener('change', () => {
@@ -6391,7 +6448,7 @@ async function viewReviews() {
       'div',
       { class: 'section-head rv-head' },
       openItems.length > 0 && selAll,
-      { todo: { me: 'Asked of you, until merged', mine: 'Opened by you, until merged', all: 'Open, whoever opened them, until merged' }[who], all: `Every merge request of ${data.repoPath ? data.repoPath.split('/').pop() : 'this repository'}` }[filter],
+      { todo: { me: t('Asked of you, until merged'), mine: t('Opened by you, until merged'), all: t('Open, whoever opened them, until merged') }[who], all: data.repoPath ? t('Every merge request of {repo}', { repo: data.repoPath.split('/').pop() }) : t('Every merge request of this repository') }[filter],
       h('span', { class: 'count' }, items.length)
     )
   )
@@ -6401,8 +6458,8 @@ async function viewReviews() {
         'div',
         { class: 'empty' },
         icon('check', 28),
-        h('div', null, filter === 'todo' ? (who === 'me' ? 'Nothing waits for you' : who === 'mine' ? 'Nothing of yours is open' : 'No open merge requests') : 'No open merge requests in this repository'),
-        filter === 'todo' && !allRepos && h('button', { class: 'btn sm', style: { marginTop: '10px' }, onClick: () => (store.set('reviewsAllRepos', true), renderView({ force: true })) }, 'Show all repos')
+        h('div', null, filter === 'todo' ? (who === 'me' ? t('Nothing waits for you') : who === 'mine' ? t('Nothing of yours is open') : t('No open merge requests')) : t('No open merge requests in this repository')),
+        filter === 'todo' && !allRepos && h('button', { class: 'btn sm', style: { marginTop: '10px' }, onClick: () => (store.set('reviewsAllRepos', true), renderView({ force: true })) }, t('Show all repos'))
       )
     )
   const list = h('div', { class: 'rv-list' })
@@ -6410,10 +6467,10 @@ async function viewReviews() {
   const mergedItems = items.filter((it) => !isOpenMr(it)).sort((a, b) => (b.mergedAt || b.updated) - (a.mergedAt || a.updated))
   if (filter === 'all' && mergedItems.length) {
     // two groups: still open, then merged by day
-    list.append(h('div', { class: 'rv-group' }, icon('merge', 12), 'Open', h('span', { class: 'rv-group-n' }, String(openItems.length))))
-    if (!openItems.length) list.append(h('div', { class: 'rv-group-empty dim' }, 'Nothing open'))
+    list.append(h('div', { class: 'rv-group' }, icon('merge', 12), t('Open'), h('span', { class: 'rv-group-n' }, String(openItems.length))))
+    if (!openItems.length) list.append(h('div', { class: 'rv-group-empty dim' }, t('Nothing open')))
     for (const it of openItems) list.append(reviewRow(it, { onSelect, filter }))
-    list.append(h('div', { class: 'rv-group rv-group-merged' }, icon('check', 12), 'Merged', h('span', { class: 'rv-group-n' }, String(mergedItems.length)), h('span', { class: 'rv-group-hint' }, 'latest first')))
+    list.append(h('div', { class: 'rv-group rv-group-merged' }, icon('check', 12), t('Merged'), h('span', { class: 'rv-group-n' }, String(mergedItems.length)), h('span', { class: 'rv-group-hint' }, t('latest first'))))
     let day = ''
     for (const it of mergedItems) {
       const d = mergedDay(it.mergedAt || it.updated)
@@ -6437,28 +6494,28 @@ async function viewReviews() {
     if (!sel.length) return
     const approvable = sel.filter((it) => !isMine(it) && !it.myApproved)
     bulk.append(
-      h('span', { class: 'rv-bulk-n' }, `${sel.length} selected`),
-      h('button', { class: 'btn sm', onClick: () => (state.rvSel.clear(), renderView({ force: true })) }, 'Clear'),
+      h('span', { class: 'rv-bulk-n' }, t('{n} selected', { n: sel.length })),
+      h('button', { class: 'btn sm', onClick: () => (state.rvSel.clear(), renderView({ force: true })) }, t('Clear')),
       h('span', { class: 'grow' }),
-      h('button', { class: 'btn sm', disabled: !approvable.length, title: approvable.length ? '' : 'Nothing selected that you can approve', onClick: () => bulkAct('approve', approvable) }, icon('check', 12), `Approve${approvable.length ? ' ' + approvable.length : ''}`),
-      h('button', { class: 'btn sm primary', onClick: () => bulkAct('merge', sel) }, icon('merge', 12), approvable.length ? `Approve & merge ${sel.length}` : `Merge ${sel.length}`)
+      h('button', { class: 'btn sm', disabled: !approvable.length, title: approvable.length ? '' : t('Nothing selected that you can approve'), onClick: () => bulkAct('approve', approvable) }, icon('check', 12), approvable.length ? t('Approve {n}', { n: approvable.length }) : t('Approve')),
+      h('button', { class: 'btn sm primary', onClick: () => bulkAct('merge', sel) }, icon('merge', 12), approvable.length ? t('Approve & merge {n}', { n: sel.length }) : t('Merge {n}', { n: sel.length }))
     )
   }
   async function bulkAct(action, list) {
-    const noun = list.length === 1 ? 'merge request' : 'merge requests'
+    const one = list.length === 1
     if (action === 'merge') {
       const toApprove = list.filter((it) => !isMine(it) && !it.myApproved).length
       const projects = new Set(list.map((it) => it.repo)).size
       const o = await mergeOptionsDialog(list, {
-        title: `${toApprove ? 'Approve and merge' : 'Merge'} ${list.length} ${noun}?`,
-        message: list.map((it) => `${it.repo} ${mrRef(it)} ${it.title}`).join('\n') + `\n\nIn the background${toApprove ? `, ${toApprove} approved first` : ''}. In one project one at a time, rebasing when needed${projects > 1 ? '; different projects at the same time' : ''}.`,
-        ok: toApprove ? 'Approve & merge' : 'Merge'
+        title: toApprove ? (one ? t('Approve and merge {n} merge request?', { n: list.length }) : t('Approve and merge {n} merge requests?', { n: list.length })) : one ? t('Merge {n} merge request?', { n: list.length }) : t('Merge {n} merge requests?', { n: list.length }),
+        message: list.map((it) => `${it.repo} ${mrRef(it)} ${it.title}`).join('\n') + '\n\n' + (toApprove ? t('In the background, {n} approved first.', { n: toApprove }) : t('In the background.')) + ' ' + (projects > 1 ? t('In one project one at a time, rebasing when needed; different projects at the same time.') : t('In one project one at a time, rebasing when needed.')),
+        ok: toApprove ? t('Approve & merge') : t('Merge')
       })
       if (!o) return
       state.rvSel.clear()
       return queueMerge(list, true, o)
     }
-    if (action === 'approve' && !(await confirmBox(`Approve ${list.length} ${noun}?`, list.map((it) => `${it.repo} ${mrRef(it)} ${it.title}`).join('\n'), 'Approve'))) return
+    if (action === 'approve' && !(await confirmBox(one ? t('Approve {n} merge request?', { n: list.length }) : t('Approve {n} merge requests?', { n: list.length }), list.map((it) => `${it.repo} ${mrRef(it)} ${it.title}`).join('\n'), t('Approve')))) return
     bulk.querySelectorAll('button').forEach((b) => (b.disabled = true))
     await runReviewActions(list, action, root)
   }
@@ -6486,11 +6543,11 @@ async function runReviewActions(list, action, root) {
       setTimeout(() => row?.classList.remove('rv-shake'), 600)
     }
   }
-  if (done) toast(`${{ approve: 'Approved', unapprove: 'Approval revoked', merge: 'Merged' }[action]} ${done} ${done === 1 ? mrNounShort(list[0]) : 'merge requests'}`)
+  if (done) toast(done === 1 ? { approve: t('Approved {n} {noun}', { n: done, noun: mrNounShort(list[0]) }), unapprove: t('Approval revoked for {n} {noun}', { n: done, noun: mrNounShort(list[0]) }), merge: t('Merged {n} {noun}', { n: done, noun: mrNounShort(list[0]) }) }[action] : { approve: t('Approved {n} merge requests', { n: done }), unapprove: t('Approval revoked for {n} merge requests', { n: done }), merge: t('Merged {n} merge requests', { n: done }) }[action])
   if (failed.length) toast(failed.join('\n'), 'error', 9000)
   await refreshReviewsAfterAction()
 }
-const mrNounShort = (it) => (it.provider === 'github' ? 'pull request' : 'merge request')
+const mrNounShort = (it) => (it.provider === 'github' ? t('pull request') : t('merge request'))
 
 /* ---- the merge queue: merges run in the worker, one at a time per project; rows show where each is ---- */
 state.mergeQueue = new Map() // url -> { state, note, position, error }
@@ -6512,12 +6569,12 @@ async function mergeOptionsDialog(list, { title, message, ok }) {
   const fields =
     list.length === 1
       ? [
-          { key: 'removeSource', label: 'Delete source branch', type: 'check', value: def ? !!def.removeSource : true },
-          ...(gl ? [{ key: 'squash', label: 'Squash commits', type: 'check', value: def ? !!def.squash : false }] : [])
+          { key: 'removeSource', label: t('Delete source branch'), type: 'check', value: def ? !!def.removeSource : true },
+          ...(gl ? [{ key: 'squash', label: t('Squash commits'), type: 'check', value: def ? !!def.squash : false }] : [])
         ]
       : [
-          { key: 'removeSource', label: 'Delete source branches', type: 'select', value: 'own', options: [['own', "Each one's own setting"], ['yes', 'Delete them'], ['no', 'Keep them']] },
-          ...(gl ? [{ key: 'squash', label: 'Squash commits', type: 'select', value: 'own', options: [['own', "Each one's own setting"], ['yes', 'Squash'], ['no', "Don't squash"]] }] : [])
+          { key: 'removeSource', label: t('Delete source branches'), type: 'select', value: 'own', options: [['own', t("Each one's own setting")], ['yes', t('Delete them')], ['no', t('Keep them')]] },
+          ...(gl ? [{ key: 'squash', label: t('Squash commits'), type: 'select', value: 'own', options: [['own', t("Each one's own setting")], ['yes', t('Squash')], ['no', t("Don't squash")]] }] : [])
         ]
   const r = await dialog({ title, message, fields, ok })
   if (!r) return null
@@ -6533,7 +6590,7 @@ async function queueMerge(list, approve, options) {
     return toast(e.message, 'error')
   }
   applyQueue(r)
-  if (list.length > 1) toast(`${list.length} merge requests queued: they merge in the background, one at a time in each project`)
+  if (list.length > 1) toast(t('{n} merge requests queued: they merge in the background, one at a time in each project', { n: list.length }))
   if (state.tab === 'reviews') renderView({ force: true })
   watchQueue()
 }
@@ -6545,14 +6602,14 @@ function applyQueue(r) {
     if (!p || p.state === j.state) continue
     const ref = `${j.repo} !${j.number}`
     if (j.state === 'merged') {
-      toast(`Merged ${ref}`)
+      toast(t('Merged {ref}', { ref }))
       const row = document.querySelector(`.review-row[data-url="${CSS.escape(url)}"]`)
       const items = state.reviews?.items
       const i = items ? items.findIndex((x) => x.url === url) : -1
       if (row) rowDone(row, 'merge', items?.[i]).catch(() => {})
       if (i >= 0) items.splice(i, 1)
-    } else if (j.state === 'failed') toast(`${ref} was not merged: ${j.error}`, 'error', 9000)
-    else if (j.state === 'auto') toast(`${ref} merges by itself when its pipeline passes`)
+    } else if (j.state === 'failed') toast(t('{ref} was not merged: {error}', { ref, error: j.error }), 'error', 9000)
+    else if (j.state === 'auto') toast(t('{ref} merges by itself when its pipeline passes', { ref }))
   }
   paintQueueRows()
 }
@@ -6572,11 +6629,11 @@ function paintQueueRow(row) {
   const pill = (cls, ...kids) => h('span', { class: `rv-q ${cls}` }, ...kids)
   clear(badge).append(
     j.state === 'queued'
-      ? pill('wait', icon('history', 11), j.position > 1 ? `In line · ${j.position}` : 'Next in line')
+      ? pill('wait', icon('history', 11), j.position > 1 ? t('In line · {n}', { n: j.position }) : t('Next in line'))
       : j.state === 'failed'
-        ? pill('bad', icon('alert', 11), 'Not merged')
+        ? pill('bad', icon('alert', 11), t('Not merged'))
         : j.state === 'auto'
-          ? pill('wait', icon('pipeline', 11), 'Merges when CI passes')
+          ? pill('wait', icon('pipeline', 11), t('Merges when CI passes'))
           : pill('run', h('span', { class: 'spinner' }), j.note)
   )
 }
@@ -6601,8 +6658,8 @@ function watchQueue() {
 async function doReviewAction(it, action, options) {
   if (action === 'merge' && !options) {
     const d = await request('reviews.detail', { ...it, ci: undefined }, 90000)
-    if (d.state !== 'open') throw new Error(`it is already ${d.state}`)
-    if (!d.merge?.ready && !d.merge?.canAuto) throw new Error(d.merge?.reason || 'it cannot be merged yet')
+    if (d.state !== 'open') throw new Error(t('it is already {state}', { state: d.state }))
+    if (!d.merge?.ready && !d.merge?.canAuto) throw new Error(d.merge?.reason || t('it cannot be merged yet'))
     options = { squash: d.merge.squash, removeSource: d.merge.removeSource, auto: !d.merge.ready }
   }
   const r = await request('reviews.act', { ...it, ci: undefined, action, options }, 90000)
@@ -6624,7 +6681,7 @@ async function rowDone(row, action, it) {
   row.classList.remove('rv-busy')
   row.classList.add('rv-done', `rv-done-${action}`)
   const badge = row.querySelector('.rv-result')
-  if (badge) append(clear(badge), [icon(action === 'merge' ? 'merge' : 'check', 12), { approve: 'Approved · waiting merge', unapprove: 'Approval revoked', merge: 'Merged' }[action]])
+  if (badge) append(clear(badge), [icon(action === 'merge' ? 'merge' : 'check', 12), { approve: t('Approved · waiting merge'), unapprove: t('Approval revoked'), merge: t('Merged') }[action]])
   await new Promise((r) => setTimeout(r, 650))
   const stays = action !== 'merge'
   if (stays) return
@@ -6645,16 +6702,16 @@ async function refreshReviewsAfterAction() {
 }
 
 /** Merged ones grouped by day: Today, Yesterday, This week, then the month. */
-function mergedDay(t) {
-  const d = new Date(t * 1000)
+function mergedDay(ts) {
+  const d = new Date(ts * 1000)
   const start = new Date()
   start.setHours(0, 0, 0, 0)
   const days = Math.floor((start - d) / 86400000) + 1
-  if (d >= start) return 'Today'
-  if (days <= 1) return 'Yesterday'
-  if (days < 7) return 'Last 7 days'
-  if (d.getMonth() === start.getMonth() && d.getFullYear() === start.getFullYear()) return 'Earlier this month'
-  return d.toLocaleDateString(undefined, { month: 'long', year: d.getFullYear() === start.getFullYear() ? undefined : 'numeric' })
+  if (d >= start) return t('Today')
+  if (days <= 1) return t('Yesterday')
+  if (days < 7) return t('Last 7 days')
+  if (d.getMonth() === start.getMonth() && d.getFullYear() === start.getFullYear()) return t('Earlier this month')
+  return d.toLocaleDateString(LANG, { month: 'long', year: d.getFullYear() === start.getFullYear() ? undefined : 'numeric' })
 }
 
 /** The foot of All: Show more merged (the next 20 of each list), or that there are no more. */
@@ -6667,7 +6724,7 @@ function loadMerged(page) {
       const prev = page > 1 && state.rvMore?.repo === repo ? state.rvMore.items : []
       const got = r.items || []
       state.rvMore = { repo, page, more: !!r.moreMerged && got.length > 0, items: prev.concat(got) }
-      if (page > 1 && !got.length) toast('No older merged merge requests')
+      if (page > 1 && !got.length) toast(t('No older merged merge requests'))
     })
     .catch((e) => {
       if (page === 1) state.rvMore = { repo, page: 1, more: false, items: [], error: e.message }
@@ -6682,22 +6739,22 @@ function loadMerged(page) {
 function moreMergedFooter(data, extra, filtering) {
   const foot = h('div', { class: 'rv-more' })
   if (!extra || (mergedLoading && extra.page === 1 && !extra.items.length)) {
-    foot.append(h('span', { class: 'dim' }, h('span', { class: 'spinner sm' }), 'Loading merged merge requests…'))
+    foot.append(h('span', { class: 'dim' }, h('span', { class: 'spinner sm' }), t('Loading merged merge requests…')))
     return foot
   }
   if (extra.error) {
-    foot.append(h('span', { class: 'dim' }, icon('alert', 12), extra.error), h('button', { class: 'btn sm', onClick: () => ((state.rvMore = null), loadMerged(1), renderView({ force: true })) }, 'Try again'))
+    foot.append(h('span', { class: 'dim' }, icon('alert', 12), extra.error), h('button', { class: 'btn sm', onClick: () => ((state.rvMore = null), loadMerged(1), renderView({ force: true })) }, t('Try again')))
     return foot
   }
   const more = extra.more
   if (!more) {
-    if (extra || data.items.some((it) => !isOpenMr(it))) foot.append(h('span', { class: 'dim' }, icon('check', 12), 'No older merged merge requests'))
+    if (extra || data.items.some((it) => !isOpenMr(it))) foot.append(h('span', { class: 'dim' }, icon('check', 12), t('No older merged merge requests')))
     return foot
   }
-  const btn = h('button', { class: 'btn rv-more-btn', title: 'Load the next older merged merge requests' }, icon('down', 12), 'Show more merged')
+  const btn = h('button', { class: 'btn rv-more-btn', title: t('Load the next older merged merge requests') }, icon('down', 12), t('Show more merged'))
   btn.addEventListener('click', async () => {
     btn.disabled = true
-    clear(btn).append(h('span', { class: 'spinner sm' }), 'Loading older merged…')
+    clear(btn).append(h('span', { class: 'spinner sm' }), t('Loading older merged…'))
     const page = (extra?.page || 1) + 1
     try {
       const r = await request('reviews.moreMerged', { repo: state.repo, page }, 60000)
@@ -6705,23 +6762,23 @@ function moreMergedFooter(data, extra, filtering) {
       const got = r.items || []
       state.rvMore = { repo: state.repo, page, more: !!r.moreMerged && got.length > 0, items: prev.concat(got) }
       renderView({ force: true })
-      if (!got.length) toast('No older merged merge requests')
+      if (!got.length) toast(t('No older merged merge requests'))
     } catch (e) {
       toast(e.message, 'error')
       btn.disabled = false
-      clear(btn).append(icon('down', 12), 'Show more merged')
+      clear(btn).append(icon('down', 12), t('Show more merged'))
     }
   })
   foot.append(btn)
-  if (filtering) foot.append(h('span', { class: 'dim rv-more-hint' }, 'Search and filters look only at what is loaded: show more to search older ones'))
+  if (filtering) foot.append(h('span', { class: 'dim rv-more-hint' }, t('Search and filters look only at what is loaded: show more to search older ones')))
   return foot
 }
 
 function reviewRow(it, { onSelect, filter } = {}) {
   const open = () => openLink(it.url)
-  const noun = it.provider === 'github' ? 'pull request' : 'merge request'
+  const noun = it.provider === 'github' ? t('pull request') : t('merge request')
   const show = () => reviewDetailSheet(it)
-  const check = h('input', { type: 'checkbox', class: 'rv-check', 'aria-label': `Select ${mrRef(it)}`, onClick: (e) => e.stopPropagation() })
+  const check = h('input', { type: 'checkbox', class: 'rv-check', 'aria-label': t('Select {ref}', { ref: mrRef(it) }), onClick: (e) => e.stopPropagation() })
   check.checked = state.rvSel.has(it.url)
   check.addEventListener('change', () => {
     check.checked ? state.rvSel.add(it.url) : state.rvSel.delete(it.url)
@@ -6733,7 +6790,7 @@ function reviewRow(it, { onSelect, filter } = {}) {
     const b = e.currentTarget
     if (action === 'merge') {
       // the same choices as the merge request page: delete the source branch, squash
-      const o = await mergeOptionsDialog([it], { title: `Merge ${mrRef(it)}?`, message: `${it.repo} ${mrRef(it)}\n${it.title}\n\nIt merges in the background${ciBusy(it) ? ', as soon as the pipeline passes' : ''}; another merge in this project goes first.`, ok: ciBusy(it) ? 'Merge when CI passes' : 'Merge' })
+      const o = await mergeOptionsDialog([it], { title: t('Merge {ref}?', { ref: mrRef(it) }), message: `${it.repo} ${mrRef(it)}\n${it.title}\n\n` + (ciBusy(it) ? t('It merges in the background, as soon as the pipeline passes; another merge in this project goes first.') : t('It merges in the background; another merge in this project goes first.')), ok: ciBusy(it) ? t('Merge when CI passes') : t('Merge') })
       if (!o) return
       return queueMerge([it], false, o)
     }
@@ -6741,13 +6798,13 @@ function reviewRow(it, { onSelect, filter } = {}) {
     clear(b).append(h('span', { class: 'spinner' }))
     await runReviewActions([it], action, row.closest('.view'))
   }
-  const approvals = it.approvedCount != null && h('span', { class: `rv-appr ${it.approvalsRequired && it.approvedCount >= it.approvalsRequired ? 'ok' : ''}`, title: 'Approvals' }, icon('check', 10), it.approvalsRequired ? `${it.approvedCount}/${it.approvalsRequired}` : String(it.approvedCount))
+  const approvals = it.approvedCount != null && h('span', { class: `rv-appr ${it.approvalsRequired && it.approvedCount >= it.approvalsRequired ? 'ok' : ''}`, title: t('Approvals') }, icon('check', 10), it.approvalsRequired ? `${it.approvedCount}/${it.approvalsRequired}` : String(it.approvedCount))
   const done = !isOpenMr(it)
   const row = h(
     'div',
-    { class: `review-row ${state.rvSel.has(it.url) ? 'sel' : ''} ${done ? 'rv-done' : ''}`, 'data-url': it.url, role: 'button', tabindex: 0, title: `Open ${mrRef(it)}`, onClick: show, onKeydown: (e) => (e.key === 'Enter' || e.key === ' ') && e.target === e.currentTarget && (e.preventDefault(), show()) },
+    { class: `review-row ${state.rvSel.has(it.url) ? 'sel' : ''} ${done ? 'rv-done' : ''}`, 'data-url': it.url, role: 'button', tabindex: 0, title: t('Open {ref}', { ref: mrRef(it) }), onClick: show, onKeydown: (e) => (e.key === 'Enter' || e.key === ' ') && e.target === e.currentTarget && (e.preventDefault(), show()) },
     done ? h('span', { class: 'rv-check-gap' }) : check,
-    h('span', { class: 'review-icon', title: it.state === 'merged' ? 'Merged' : it.state === 'closed' ? 'Closed' : 'Open' }, icon('merge', done ? 13 : 15)),
+    h('span', { class: 'review-icon', title: it.state === 'merged' ? t('Merged') : it.state === 'closed' ? t('Closed') : t('Open') }, icon('merge', done ? 13 : 15)),
     h(
       'div',
       { class: 'grow', style: { minWidth: 0 } },
@@ -6755,21 +6812,21 @@ function reviewRow(it, { onSelect, filter } = {}) {
         'div',
         { class: 'review-title' },
         h('span', { class: 'ellipsis', title: it.title }, it.title),
-        it.state === 'closed' && h('span', { class: 'pill rv-closed' }, 'Closed'),
-        mergedStillRunning(it) && h('span', { class: 'pill rv-merged-run', title: 'Merged; its pipeline is still running' }, icon('merge', 10), 'Merged · pipeline running'),
-        !done && it.draft && h('span', { class: 'pill' }, 'Draft'),
-        it.roles.includes('review') && h('span', { class: 'pill role' }, 'Review requested'),
-        it.roles.includes('assigned') && h('span', { class: 'pill role' }, 'Assigned'),
-        isMine(it) && isOpenMr(it) && h('span', { class: 'pill role rv-mine', title: 'You opened it' }, 'Opened by me'),
-        isOpenMr(it) && it.noReviewer && !isMine(it) && !it.roles.includes('review') && h('span', { class: 'pill rv-noreviewer', title: 'Nobody was asked to review it' }, 'No reviewer'),
-        it.ci && !ciBusy(it) && h('span', { class: `ci ci-${it.ci}`, title: `CI: ${it.ci}` }, ciIcon(it.ci), it.ci), // a running one: the pill below says it
+        it.state === 'closed' && h('span', { class: 'pill rv-closed' }, t('Closed')),
+        mergedStillRunning(it) && h('span', { class: 'pill rv-merged-run', title: t('Merged; its pipeline is still running') }, icon('merge', 10), t('Merged · pipeline running')),
+        !done && it.draft && h('span', { class: 'pill' }, t('Draft')),
+        it.roles.includes('review') && h('span', { class: 'pill role' }, t('Review requested')),
+        it.roles.includes('assigned') && h('span', { class: 'pill role' }, t('Assigned')),
+        isMine(it) && isOpenMr(it) && h('span', { class: 'pill role rv-mine', title: t('You opened it') }, t('Opened by me')),
+        isOpenMr(it) && it.noReviewer && !isMine(it) && !it.roles.includes('review') && h('span', { class: 'pill rv-noreviewer', title: t('Nobody was asked to review it') }, t('No reviewer')),
+        it.ci && !ciBusy(it) && h('span', { class: `ci ci-${it.ci}`, title: t('CI: {state}', { state: it.ci }) }, ciIcon(it.ci), it.ci), // a running one: the pill below says it
         approvals,
-        it.myApproved && h('span', { class: 'pill rv-waiting', title: 'You approved it; it is not merged yet' }, icon('check', 10), 'Approved · waiting merge'),
-        it.conflicts && h('span', { class: 'pill rv-conflict', title: 'Merge conflicts: resolve them before merging' }, icon('alert', 10), 'Conflicts'),
-        isOpenMr(it) && ciBusy(it) && h('span', { class: 'pill rv-running', title: 'The pipeline is still running' }, h('span', { class: 'spinner sm' }), 'Pipeline running'),
+        it.myApproved && h('span', { class: 'pill rv-waiting', title: t('You approved it; it is not merged yet') }, icon('check', 10), t('Approved · waiting merge')),
+        it.conflicts && h('span', { class: 'pill rv-conflict', title: t('Merge conflicts: resolve them before merging') }, icon('alert', 10), t('Conflicts')),
+        isOpenMr(it) && ciBusy(it) && h('span', { class: 'pill rv-running', title: t('The pipeline is still running') }, h('span', { class: 'spinner sm' }), t('Pipeline running')),
         (() => {
           const n = rvNewComments(it)
-          return n > 0 && h('span', { class: 'pill rv-new', title: 'New since you last opened it' }, `${n} new comment${n > 1 ? 's' : ''}`)
+          return n > 0 && h('span', { class: 'pill rv-new', title: t('New since you last opened it') }, n > 1 ? t('{n} new comments', { n }) : t('{n} new comment', { n }))
         })(),
         ...(it.labels || []).slice(0, 3).map((l) => h('span', { class: 'pill rv-label' }, l))
       ),
@@ -6777,7 +6834,7 @@ function reviewRow(it, { onSelect, filter } = {}) {
         'div',
         { class: 'review-meta' },
         h('span', { class: 'mono' }, `${it.repo} ${it.provider === 'github' ? '#' : '!'}${it.number}`),
-        ` · ${it.author} · ${it.state === 'merged' && it.mergedAt ? 'merged ' + ago(it.mergedAt) : ago(it.updated)}`,
+        ` · ${it.author} · ${it.state === 'merged' && it.mergedAt ? t('merged {ago}', { ago: ago(it.mergedAt) }) : ago(it.updated)}`,
         it.source && [' · ', h('span', { class: 'mono' }, `${it.source} → ${it.target}`)]
       )
     ),
@@ -6785,9 +6842,9 @@ function reviewRow(it, { onSelect, filter } = {}) {
       'div',
       { class: 'review-actions' },
       h('span', { class: 'rv-result' }),
-      !done && !isMine(it) && !it.myApproved && h('button', { class: 'btn sm rv-approve', title: `Approve ${mrRef(it)}`, onClick: act('approve') }, icon('check', 12), 'Approve'),
-      !done && h('button', { class: `btn sm rv-merge ${it.myApproved || isMine(it) ? 'primary' : ''}`, title: ciBusy(it) ? `GitLab merges ${mrRef(it)} as soon as its pipeline passes` : `Merge ${mrRef(it)} now (if it can be merged)`, onClick: act('merge') }, icon('merge', 12), ciBusy(it) ? 'Merge when CI passes' : 'Merge now'),
-      h('button', { class: 'icon-btn', title: `Open the ${noun} in the browser`, onClick: (e) => (e.stopPropagation(), open()) }, icon('open', 14)),
+      !done && !isMine(it) && !it.myApproved && h('button', { class: 'btn sm rv-approve', title: t('Approve {ref}', { ref: mrRef(it) }), onClick: act('approve') }, icon('check', 12), t('Approve')),
+      !done && h('button', { class: `btn sm rv-merge ${it.myApproved || isMine(it) ? 'primary' : ''}`, title: ciBusy(it) ? t('GitLab merges {ref} as soon as its pipeline passes', { ref: mrRef(it) }) : t('Merge {ref} now (if it can be merged)', { ref: mrRef(it) }), onClick: act('merge') }, icon('merge', 12), ciBusy(it) ? t('Merge when CI passes') : t('Merge now')),
+      h('button', { class: 'icon-btn', title: t('Open the {noun} in the browser', { noun }), onClick: (e) => (e.stopPropagation(), open()) }, icon('open', 14)),
       h('span', { class: 'review-chev', 'aria-hidden': 'true' }, icon('right', 14))
     )
   )
@@ -6799,11 +6856,11 @@ async function actOnReview(it, action, body, btn) {
   const label = btn ? [...btn.childNodes] : null
   if (btn) {
     btn.disabled = true
-    clear(btn).append(h('span', { class: 'spinner' }), 'Sending…')
+    clear(btn).append(h('span', { class: 'spinner' }), t('Sending…'))
   }
   try {
     await request('reviews.act', { ...it, ci: undefined, action, body }, 90000)
-    toast({ approve: 'Approved', changes: 'Changes requested', comment: 'Comment posted' }[action] + `: ${it.title}`)
+    toast({ approve: t('Approved: {title}', { title: it.title }), changes: t('Changes requested: {title}', { title: it.title }), comment: t('Comment posted: {title}', { title: it.title }) }[action])
     if (action === 'approve' || action === 'changes') {
       const its = state.reviews?.items
       const i = its ? its.findIndex((x) => x.url === it.url) : -1
@@ -6825,7 +6882,7 @@ async function actOnReview(it, action, body, btn) {
 /** AI review of a pull/merge request: generate, edit, then post as comment, request changes or approve. */
 async function aiReviewModal(it) {
   closeOverlays()
-  const noun = it.provider === 'github' ? 'pull request' : 'merge request'
+  const noun = it.provider === 'github' ? t('pull request') : t('merge request')
   const prefs = store.get('aiReviewPrefs', { instructions: '' })
   let agents = [
     { id: 'claude', name: 'Claude Code', available: true },
@@ -6839,22 +6896,22 @@ async function aiReviewModal(it) {
   const agentSel = h('select', { onChange: () => request('ai.settings', { agent: agentSel.value }).catch(() => {}) })
   const fillAgents = () => {
     clear(agentSel)
-    for (const a of agents) agentSel.append(h('option', { value: a.id, selected: a.id === agent, disabled: !a.available }, a.available ? a.name : `${a.name} (not installed)`))
+    for (const a of agents) agentSel.append(h('option', { value: a.id, selected: a.id === agent, disabled: !a.available }, a.available ? a.name : t('{name} (not installed)', { name: a.name })))
   }
   fillAgents()
   request('ai.settings', {}, 20000)
     .then((r) => ((agents = r.agents), (agent = r.agent), fillAgents()))
     .catch(() => {})
-  const instructions = h('textarea', { rows: 2, placeholder: 'Optional, e.g. "Write in Thai", "Focus on security", "We use React Query"' })
+  const instructions = h('textarea', { rows: 2, placeholder: t('Optional, e.g. "Write in Thai", "Focus on security", "We use React Query"') })
   instructions.value = prefs.instructions || ''
-  const result = h('textarea', { class: 'ai-result', rows: 12, placeholder: 'The review appears here. Edit it before posting.' })
+  const result = h('textarea', { class: 'ai-result', rows: 12, placeholder: t('The review appears here. Edit it before posting.') })
   const status = h('div', { class: 'ai-status' })
   const verdictEl = h('span', { class: 'pill' })
   const genBtn = h('button', { type: 'button', class: 'btn sm ai-gen', onClick: () => generate() })
   const postBtns = {
-    comment: h('button', { type: 'button', class: 'btn', onClick: () => post('comment') }, icon('edit', 13), 'Comment'),
-    changes: h('button', { type: 'button', class: 'btn danger', onClick: () => post('changes') }, icon('x', 13), 'Request changes'),
-    approve: h('button', { type: 'button', class: 'btn', onClick: () => post('approve') }, icon('check', 13), 'Approve')
+    comment: h('button', { type: 'button', class: 'btn', onClick: () => post('comment') }, icon('edit', 13), t('Comment')),
+    changes: h('button', { type: 'button', class: 'btn danger', onClick: () => post('changes') }, icon('x', 13), t('Request changes')),
+    approve: h('button', { type: 'button', class: 'btn', onClick: () => post('approve') }, icon('check', 13), t('Approve'))
   }
   let stopTick = () => {}
   const sync = (on, text) => {
@@ -6862,9 +6919,9 @@ async function aiReviewModal(it) {
     result.classList.toggle('generating', on)
     result.readOnly = on
     stopTick()
-    if (on) stopTick = aiTicker(status, agents.find((a) => a.id === agentSel.value)?.name || 'AI', `the ${noun}`)
+    if (on) stopTick = aiTicker(status, agents.find((a) => a.id === agentSel.value)?.name || 'AI', t('the {noun}', { noun }))
     else append(clear(status), [text || ''])
-    append(clear(genBtn), [on ? [icon('x', 13), 'Stop'] : [icon(result.value.trim() ? 'refresh' : 'wand', 13), result.value.trim() ? 'Review again' : 'Start review']])
+    append(clear(genBtn), [on ? [icon('x', 13), t('Stop')] : [icon(result.value.trim() ? 'refresh' : 'wand', 13), result.value.trim() ? t('Review again') : t('Start review')]])
     genBtn.className = `btn sm ai-gen ${on ? 'stop' : ''}`
     const has = !on && !!result.value.trim()
     for (const [k, b] of Object.entries(postBtns)) {
@@ -6872,26 +6929,26 @@ async function aiReviewModal(it) {
       b.classList.toggle('primary', has && k === verdict)
     }
     verdictEl.className = `pill verdict-${verdict}`
-    verdictEl.textContent = has ? `AI suggests: ${{ approve: 'Approve', changes: 'Request changes', comment: 'Comment' }[verdict]}` : ''
+    verdictEl.textContent = has ? { approve: t('AI suggests: Approve'), changes: t('AI suggests: Request changes'), comment: t('AI suggests: Comment') }[verdict] : ''
   }
   result.addEventListener('input', () => sync(false, status.textContent))
 
   async function generate() {
     if (busy) {
       gen++
-      return sync(false, 'Stopped.')
+      return sync(false, t('Stopped.'))
     }
     const my = ++gen
     store.set('aiReviewPrefs', { instructions: instructions.value })
     const name = agents.find((a) => a.id === agentSel.value)?.name || 'AI'
-    sync(true, `${name} is reading the ${noun}…`)
+    sync(true, t('{name} is reading the {noun}…', { name, noun }))
     const started = Date.now()
     try {
       const r = await request('ai.review', { ...it, ci: undefined, agent: agentSel.value, instructions: instructions.value }, 118000)
       if (my !== gen) return
       result.value = r.review
       verdict = r.verdict
-      sync(false, `Reviewed by ${name} in ${((Date.now() - started) / 1000).toFixed(1)}s. Check it before posting: it is posted under your name.`)
+      sync(false, t('Reviewed by {name} in {secs}s. Check it before posting: it is posted under your name.', { name, secs: ((Date.now() - started) / 1000).toFixed(1) }))
     } catch (e) {
       if (my !== gen) return
       sync(false, '')
@@ -6901,8 +6958,8 @@ async function aiReviewModal(it) {
   async function post(action) {
     const text = result.value.trim()
     if (!text) return
-    const label = { approve: 'Approve', changes: 'Request changes', comment: 'Comment' }[action]
-    if (!(await confirmBox(`${label} with this review?`, `${it.repo} ${it.provider === 'github' ? '#' : '!'}${it.number}\nThe review is posted on ${it.host} under your name.`, label, action === 'changes'))) return
+    const label = { approve: t('Approve'), changes: t('Request changes'), comment: t('Comment') }[action]
+    if (!(await confirmBox({ approve: t('Approve with this review?'), changes: t('Request changes with this review?'), comment: t('Comment with this review?') }[action], `${it.repo} ${it.provider === 'github' ? '#' : '!'}${it.number}\n` + t('The review is posted on {host} under your name.', { host: it.host }), label, action === 'changes'))) return
     const b = postBtns[action]
     b.disabled = true
     if (await actOnReview(it, action, text)) close()
@@ -6918,43 +6975,43 @@ async function aiReviewModal(it) {
   const box = h(
     'div',
     { class: 'dialog ai-dialog ai-review-dialog', role: 'dialog' },
-    h('div', { class: 'ai-title' }, h('div', null, h('h3', null, 'AI review'), h('p', null, `${it.repo} ${it.provider === 'github' ? '#' : '!'}${it.number} · ${it.title}`))),
-    h('div', { class: 'ai-row' }, h('div', { class: 'field grow' }, h('label', null, 'Agent'), agentSel)),
-    h('div', { class: 'field' }, h('label', null, 'Instructions'), instructions),
-    h('div', { class: 'field' }, h('div', { class: 'ai-msg-head' }, h('label', { class: 'row' }, 'Review', verdictEl), genBtn), aiWrap(result)),
+    h('div', { class: 'ai-title' }, h('div', null, h('h3', null, t('AI review')), h('p', null, `${it.repo} ${it.provider === 'github' ? '#' : '!'}${it.number} · ${it.title}`))),
+    h('div', { class: 'ai-row' }, h('div', { class: 'field grow' }, h('label', null, t('Agent')), agentSel)),
+    h('div', { class: 'field' }, h('label', null, t('Instructions')), instructions),
+    h('div', { class: 'field' }, h('div', { class: 'ai-msg-head' }, h('label', { class: 'row' }, t('Review'), verdictEl), genBtn), aiWrap(result)),
     status,
-    h('div', { class: 'buttons' }, h('button', { type: 'button', class: 'btn', onClick: close }, 'Close'), h('span', { class: 'grow' }), postBtns.comment, postBtns.changes, postBtns.approve)
+    h('div', { class: 'buttons' }, h('button', { type: 'button', class: 'btn', onClick: close }, t('Close')), h('span', { class: 'grow' }), postBtns.comment, postBtns.changes, postBtns.approve)
   )
   const overlay = h('div', { class: 'overlay', onMousedown: (e) => e.target === overlay && !busy && close() }, box)
   mountOverlay(overlay, close)
   document.addEventListener('keydown', onKey)
-  sync(false, 'Choose the agent, add instructions if you like, then press Start review.')
+  sync(false, t('Choose the agent, add instructions if you like, then press Start review.'))
   genBtn.focus() // choose the agent and add instructions first, then Start review
 }
 
 async function reviewDialog(it, preset = 'approve') {
-  const noun = it.provider === 'github' ? 'pull request' : 'merge request'
+  const noun = it.provider === 'github' ? t('pull request') : t('merge request')
   const r = await dialog({
-    title: `Review: ${it.title}`,
-    message: `${it.repo} ${it.provider === 'github' ? '#' : '!'}${it.number} by ${it.author}`,
+    title: t('Review: {title}', { title: it.title }),
+    message: t('{ref} by {author}', { ref: `${it.repo} ${it.provider === 'github' ? '#' : '!'}${it.number}`, author: it.author }),
     fields: [
       {
         key: 'action',
-        label: 'Your review',
+        label: t('Your review'),
         type: 'select',
         value: preset,
         options: [
-          ['approve', 'Approve'],
-          ['changes', 'Request changes'],
-          ['comment', 'Comment only']
+          ['approve', t('Approve')],
+          ['changes', t('Request changes')],
+          ['comment', t('Comment only')]
         ]
       },
-      { key: 'body', label: 'Comment (needed for Request changes and Comment)', type: 'textarea', placeholder: `Feedback on this ${noun}` }
+      { key: 'body', label: t('Comment (needed for Request changes and Comment)'), type: 'textarea', placeholder: t('Feedback on this {noun}', { noun }) }
     ],
-    ok: 'Submit review'
+    ok: t('Submit review')
   })
   if (!r) return
-  if (r.action !== 'approve' && !r.body.trim()) return toast('Write a comment for this kind of review', 'error')
+  if (r.action !== 'approve' && !r.body.trim()) return toast(t('Write a comment for this kind of review'), 'error')
   await actOnReview(it, r.action, r.body)
 }
 
@@ -7025,7 +7082,7 @@ function mdRender(src) {
   return el
 }
 
-const mrNoun = (it) => (it.provider === 'github' ? 'pull request' : 'merge request')
+const mrNoun = (it) => (it.provider === 'github' ? t('pull request') : t('merge request'))
 const mrRef = (it) => `${it.provider === 'github' ? '#' : '!'}${it.number}`
 const isOwnMr = (it) => it.roles?.length > 0 && it.roles.every((r) => r === 'mine' || r === 'repo') && it.roles.includes('mine')
 const initials = (n) => (String(n || '?').replace(/[^A-Za-z0-9]/g, '')[0] || '?').toUpperCase()
@@ -7034,7 +7091,7 @@ const initials = (n) => (String(n || '?').replace(/[^A-Za-z0-9]/g, '')[0] || '?'
 async function reviewDetailSheet(it, tab = 'overview') {
   rvMarkSeen(it)
   const body = h('div', { class: 'mrd' }, h('div', { class: 'inline-skeleton', style: { margin: '16px' } }, h('span'), h('span'), h('span')))
-  openSheet(`${mrRef(it)} · ${it.title}`, body, [h('button', { class: 'btn sm', title: `Open the ${mrNoun(it)} in the browser`, onClick: () => openLink(it.url) }, icon('open', 12), 'Open')])
+  openSheet(`${mrRef(it)} · ${it.title}`, body, [h('button', { class: 'btn sm', title: t('Open the {noun} in the browser', { noun: mrNoun(it) }), onClick: () => openLink(it.url) }, icon('open', 12), t('Open'))])
   const sheet = state.sheets[state.sheets.length - 1]
   sheet.el.classList.add('wide-sheet', 'mr-detail')
   placeSheet(sheet.el)
@@ -7043,12 +7100,12 @@ async function reviewDetailSheet(it, tab = 'overview') {
     d = await request('reviews.detail', { ...it, ci: undefined }, 90000)
   } catch (e) {
     if (!sheet.el.isConnected) return
-    return append(clear(body), [h('div', { class: 'empty' }, icon('alert', 28), h('div', null, e.message), h('div', { class: 'empty-actions' }, h('button', { class: 'btn sm', onClick: () => openLink(it.url) }, icon('open', 12), 'Open in the browser')))])
+    return append(clear(body), [h('div', { class: 'empty' }, icon('alert', 28), h('div', null, e.message), h('div', { class: 'empty-actions' }, h('button', { class: 'btn sm', onClick: () => openLink(it.url) }, icon('open', 12), t('Open in the browser'))))])
   }
   if (!sheet.el.isConnected) return
   const own = isOwnMr(it)
   const localRepo = !!(state.status && state.reviews?.repo === state.repo && inThisRepo(it, state.reviews))
-  const stateLabel = d.state === 'merged' ? 'Merged' : d.state === 'closed' ? 'Closed' : d.draft ? 'Draft' : 'Open'
+  const stateLabel = d.state === 'merged' ? t('Merged') : d.state === 'closed' ? t('Closed') : d.draft ? t('Draft') : t('Open')
 
   const head = h(
     'div',
@@ -7059,19 +7116,19 @@ async function reviewDetailSheet(it, tab = 'overview') {
       { class: 'mrd-meta' },
       h('span', { class: `mrd-state s-${d.draft && d.state === 'open' ? 'draft' : d.state}` }, stateLabel),
       d.source && h('span', { class: 'mrd-route' }, h('span', { class: 'ref' }, icon('branch', 10), h('span', { class: 'ref-t' }, d.source)), icon('right', 12), h('span', { class: 'ref' }, icon('branch', 10), h('span', { class: 'ref-t' }, d.target))),
-      h('span', { class: 'dim' }, `${d.author} · opened ${ago(d.created)} · ${it.repo}`),
-      it.ci && h('button', { class: `ci ci-${it.ci}`, title: 'See the pipeline', onClick: () => go('pipeline') }, ciBusy(it) ? h('span', { class: 'spinner sm' }) : ciIcon(it.ci), `CI ${it.ci}`),
-      d.state === 'open' && d.myApproved && h('span', { class: 'pill rv-waiting' }, icon('check', 10), 'Approved · waiting merge')
+      h('span', { class: 'dim' }, t('{author} · opened {ago} · {repo}', { author: d.author, ago: ago(d.created), repo: it.repo })),
+      it.ci && h('button', { class: `ci ci-${it.ci}`, title: t('See the pipeline'), onClick: () => go('pipeline') }, ciBusy(it) ? h('span', { class: 'spinner sm' }) : ciIcon(it.ci), `CI ${it.ci}`),
+      d.state === 'open' && d.myApproved && h('span', { class: 'pill rv-waiting' }, icon('check', 10), t('Approved · waiting merge'))
     )
   )
   const counts = { commits: d.commits.length, changes: d.stats.files }
   const tabs = h('div', { class: 'mrd-tabs', role: 'tablist' })
   const pane = h('div', { class: 'mrd-pane' })
   const TABS_MR = [
-    ['overview', 'Overview'],
-    ['commits', 'Commits', counts.commits],
-    ['changes', 'Changes', counts.changes],
-    ['pipeline', 'Pipeline']
+    ['overview', t('Overview')],
+    ['commits', t('Commits'), counts.commits],
+    ['changes', t('Changes'), counts.changes],
+    ['pipeline', t('Pipeline')]
   ]
   function drawTabs(cur) {
     clear(tabs)
@@ -7095,13 +7152,13 @@ async function reviewDetailSheet(it, tab = 'overview') {
     const left = h(
       'div',
       { class: 'mrd-main' },
-      h('div', { class: 'mrd-desc' }, h('div', { class: 'mrd-label' }, 'Description'), d.body.trim() ? mdRender(d.body) : h('div', { class: 'dim' }, 'No description')),
+      h('div', { class: 'mrd-desc' }, h('div', { class: 'mrd-label' }, t('Description')), d.body.trim() ? mdRender(d.body) : h('div', { class: 'dim' }, t('No description'))),
       mergeWidget()
     )
     const activity = h(
       'div',
       { class: 'mrd-activity' },
-      h('div', { class: 'section-head mrd-sec' }, 'Activity', h('span', { class: 'count' }, d.comments.length)),
+      h('div', { class: 'section-head mrd-sec' }, t('Activity'), h('span', { class: 'count' }, d.comments.length)),
       d.comments.length
         ? h(
             'div',
@@ -7118,8 +7175,8 @@ async function reviewDetailSheet(it, tab = 'overview') {
                     'div',
                     { class: 'mrd-c-head' },
                     h('b', null, c.author),
-                    c.kind === 'approved' && h('span', { class: 'mrd-tag ok' }, icon('check', 11), 'approved'),
-                    c.kind === 'changes' && h('span', { class: 'mrd-tag bad' }, 'requested changes'),
+                    c.kind === 'approved' && h('span', { class: 'mrd-tag ok' }, icon('check', 11), t('approved')),
+                    c.kind === 'changes' && h('span', { class: 'mrd-tag bad' }, t('requested changes')),
                     c.file && h('span', { class: 'mono dim mrd-c-file' }, `${c.file}${c.line ? ':' + c.line : ''}`),
                     h('span', { class: 'dim' }, ago(c.at))
                   ),
@@ -7128,19 +7185,19 @@ async function reviewDetailSheet(it, tab = 'overview') {
               )
             )
           )
-        : h('div', { class: 'dim mrd-none' }, 'No comments yet')
+        : h('div', { class: 'dim mrd-none' }, t('No comments yet'))
     )
-    const stateIcon = (s) => (s === 'approved' ? h('span', { class: 'mrd-rs ok', title: 'Approved' }, icon('check', 12)) : s === 'changes' ? h('span', { class: 'mrd-rs bad', title: 'Requested changes' }, icon('x', 12)) : h('span', { class: 'mrd-rs', title: 'Waiting' }, icon('minus', 12)))
+    const stateIcon = (s) => (s === 'approved' ? h('span', { class: 'mrd-rs ok', title: t('Approved') }, icon('check', 12)) : s === 'changes' ? h('span', { class: 'mrd-rs bad', title: t('Requested changes') }, icon('x', 12)) : h('span', { class: 'mrd-rs', title: t('Waiting') }, icon('minus', 12)))
     const side = h(
       'aside',
       { class: 'mrd-side' },
-      h('div', { class: 'mrd-box' }, h('div', { class: 'mrd-label' }, 'Opened by'), person(d.author || it.author || '?', h('span', { class: 'dim mrd-when-small' }, ago(d.created)))),
-      h('div', { class: 'mrd-box' }, h('div', { class: 'mrd-label' }, 'Approvals'), h('div', { class: 'mrd-big' }, d.approvals.required ? `${d.approvals.given} of ${d.approvals.required}` : String(d.approvals.given), h('span', { class: 'dim' }, d.approvals.required ? ' approved' : d.approvals.given === 1 ? ' approval' : ' approvals'))),
-      h('div', { class: 'mrd-box' }, h('div', { class: 'mrd-label' }, 'Reviewers'), d.reviewers.length ? d.reviewers.map((r) => person(r.name, stateIcon(r.state))) : h('div', { class: 'dim' }, 'None')),
-      h('div', { class: 'mrd-box' }, h('div', { class: 'mrd-label' }, 'Assignees'), d.assignees.length ? d.assignees.map((a) => person(a)) : h('div', { class: 'dim' }, 'None')),
-      d.labels.length > 0 && h('div', { class: 'mrd-box' }, h('div', { class: 'mrd-label' }, 'Labels'), h('div', { class: 'mrd-labels' }, d.labels.map((l) => h('span', { class: 'pill role' }, l)))),
+      h('div', { class: 'mrd-box' }, h('div', { class: 'mrd-label' }, t('Opened by')), person(d.author || it.author || '?', h('span', { class: 'dim mrd-when-small' }, ago(d.created)))),
+      h('div', { class: 'mrd-box' }, h('div', { class: 'mrd-label' }, t('Approvals')), h('div', { class: 'mrd-big' }, d.approvals.required ? t('{given} of {required}', { given: d.approvals.given, required: d.approvals.required }) : String(d.approvals.given), h('span', { class: 'dim' }, d.approvals.required ? ' ' + t('approved') : d.approvals.given === 1 ? ' ' + t('approval') : ' ' + t('approvals')))),
+      h('div', { class: 'mrd-box' }, h('div', { class: 'mrd-label' }, t('Reviewers')), d.reviewers.length ? d.reviewers.map((r) => person(r.name, stateIcon(r.state))) : h('div', { class: 'dim' }, t('None'))),
+      h('div', { class: 'mrd-box' }, h('div', { class: 'mrd-label' }, t('Assignees')), d.assignees.length ? d.assignees.map((a) => person(a)) : h('div', { class: 'dim' }, t('None'))),
+      d.labels.length > 0 && h('div', { class: 'mrd-box' }, h('div', { class: 'mrd-label' }, t('Labels')), h('div', { class: 'mrd-labels' }, d.labels.map((l) => h('span', { class: 'pill role' }, l)))),
       (d.stats.add != null || d.stats.files != null) &&
-        h('div', { class: 'mrd-box' }, h('div', { class: 'mrd-label' }, 'Changes'), h('div', { class: 'mono' }, d.stats.files != null && `${d.stats.files} files `, d.stats.add != null && [h('span', { class: 'a' }, `+${d.stats.add}`), ' ', h('span', { class: 'd' }, `−${d.stats.del}`)]))
+        h('div', { class: 'mrd-box' }, h('div', { class: 'mrd-label' }, t('Changes')), h('div', { class: 'mono' }, d.stats.files != null && (d.stats.files === 1 ? t('{n} file', { n: d.stats.files }) : t('{n} files', { n: d.stats.files })) + ' ', d.stats.add != null && [h('span', { class: 'a' }, `+${d.stats.add}`), ' ', h('span', { class: 'd' }, `−${d.stats.del}`)]))
     )
     return h('div', { class: 'mrd-overview' }, left, side, activity)
   }
@@ -7157,7 +7214,7 @@ async function reviewDetailSheet(it, tab = 'overview') {
       try {
         const r = await doReviewAction(it, action, options)
         widget.classList.add(`mrw-done-${action}`)
-        toast(`${{ approve: 'Approved', unapprove: 'Approval revoked', merge: r?.state === 'auto' ? 'Set to merge when the pipeline passes' : 'Merged' }[action]}: ${it.title}`)
+        toast({ approve: t('Approved: {title}', { title: it.title }), unapprove: t('Approval revoked: {title}', { title: it.title }), merge: r?.state === 'auto' ? t('Set to merge when the pipeline passes: {title}', { title: it.title }) : t('Merged: {title}', { title: it.title }) }[action])
         await new Promise((res) => setTimeout(res, 600))
         refreshReviewsAfterAction()
         if (state.sheets.includes(sheet)) (closeSheet(), reviewDetailSheet(it))
@@ -7172,34 +7229,34 @@ async function reviewDetailSheet(it, tab = 'overview') {
     const rows = []
     if (ci)
       rows.push(
-        rowEl(`ci-${ci}`, ci === 'running' || ci === 'pending' ? h('span', { class: 'spinner sm' }) : ciIcon(ci), h('span', { class: 'grow' }, h('b', null, `Pipeline ${PIPE_LABEL[ci]?.toLowerCase() || ci}`), d.headSha && h('span', { class: 'dim mono' }, ` for ${d.headSha.slice(0, 8)}`)), h('button', { class: 'btn sm', onClick: () => go('pipeline') }, icon('pipeline', 12), 'View pipeline'))
+        rowEl(`ci-${ci}`, ci === 'running' || ci === 'pending' ? h('span', { class: 'spinner sm' }) : ciIcon(ci), h('span', { class: 'grow' }, h('b', null, t('Pipeline {state}', { state: PIPE_LABEL[ci]?.toLowerCase() || ci })), d.headSha && h('span', { class: 'dim mono' }, ' ' + t('for {sha}', { sha: d.headSha.slice(0, 8) }))), h('button', { class: 'btn sm', onClick: () => go('pipeline') }, icon('pipeline', 12), t('View pipeline')))
       )
     const approvedBy = d.reviewers.filter((r) => r.state === 'approved').map((r) => r.name)
     const need = d.approvals.required
     const apText = approvedBy.length
-      ? [h('b', null, `Approved by ${approvedBy.join(', ')}`), need ? h('span', { class: 'dim' }, ` · ${d.approvals.given} of ${need} required`) : null]
+      ? [h('b', null, t('Approved by {names}', { names: approvedBy.join(', ') })), need ? h('span', { class: 'dim' }, ' · ' + t('{given} of {need} required', { given: d.approvals.given, need })) : null]
       : need
-        ? [h('b', null, `Requires ${need} approval${need > 1 ? 's' : ''}`), h('span', { class: 'dim' }, ' · none yet')]
-        : [h('b', null, 'Approval is optional')]
+        ? [h('b', null, need > 1 ? t('Requires {n} approvals', { n: need }) : t('Requires {n} approval', { n: need })), h('span', { class: 'dim' }, ' · ' + t('none yet'))]
+        : [h('b', null, t('Approval is optional'))]
     const apOk = need ? d.approvals.given >= need : approvedBy.length > 0
     rows.push(
       rowEl(
         apOk ? 'ok' : '',
         icon(apOk ? 'check' : 'user', 13),
-        h('span', { class: 'grow' }, ...apText, d.myApproved && h('span', { class: 'mrw-you' }, ' · you approved')),
-        open && d.canApprove && !d.myApproved && h('button', { class: 'btn sm primary mrw-approve', onClick: (e) => act(e.currentTarget, 'approve', null, 'Approving…') }, icon('check', 12), 'Approve'),
-        open && d.myApproved && h('span', { class: 'pill rv-waiting' }, icon('check', 10), 'Approved'),
-        open && d.myApproved && d.canUnapprove && h('button', { class: 'btn sm mrw-revoke', title: 'Take back your approval', onClick: (e) => act(e.currentTarget, 'unapprove', null, 'Revoking…') }, 'Revoke')
+        h('span', { class: 'grow' }, ...apText, d.myApproved && h('span', { class: 'mrw-you' }, ' · ' + t('you approved'))),
+        open && d.canApprove && !d.myApproved && h('button', { class: 'btn sm primary mrw-approve', onClick: (e) => act(e.currentTarget, 'approve', null, t('Approving…')) }, icon('check', 12), t('Approve')),
+        open && d.myApproved && h('span', { class: 'pill rv-waiting' }, icon('check', 10), t('Approved')),
+        open && d.myApproved && d.canUnapprove && h('button', { class: 'btn sm mrw-revoke', title: t('Take back your approval'), onClick: (e) => act(e.currentTarget, 'unapprove', null, t('Revoking…')) }, t('Revoke'))
       )
     )
-    if (!open) rows.push(rowEl(d.state === 'merged' ? 'merged' : '', icon(d.state === 'merged' ? 'merge' : 'x', 13), h('span', { class: 'grow' }, h('b', null, d.state === 'merged' ? 'Merged' : 'Closed'))))
+    if (!open) rows.push(rowEl(d.state === 'merged' ? 'merged' : '', icon(d.state === 'merged' ? 'merge' : 'x', 13), h('span', { class: 'grow' }, h('b', null, d.state === 'merged' ? t('Merged') : t('Closed')))))
     else {
       const squash = h('input', { type: 'checkbox' })
       squash.checked = !!m.squash
       const remove = h('input', { type: 'checkbox' })
       remove.checked = !!m.removeSource
       const opts = () => ({ squash: squash.checked, removeSource: remove.checked })
-      const target = d.target ? ` into ${d.target}` : ''
+      const target = d.target ? ' ' + t('into {branch}', { branch: d.target }) : ''
       const can = m.ready || m.canAuto
       rows.push(
         rowEl(
@@ -7208,16 +7265,16 @@ async function reviewDetailSheet(it, tab = 'overview') {
           h(
             'div',
             { class: 'grow mrw-merge-body' },
-            h('div', null, m.autoSet ? h('b', null, 'Set to merge when the pipeline passes') : m.ready ? h('b', null, `Ready to merge${target}`) : h('b', null, 'Merge blocked'), !m.ready && !m.autoSet && m.reason && h('span', { class: 'dim' }, ` · ${m.reason}`)),
-            (can || ci === 'running' || ci === 'pending') && h('div', { class: 'mrw-opts' }, h('label', { class: 'check' }, remove, 'Delete source branch'), h('label', { class: 'check' }, squash, 'Squash commits'))
+            h('div', null, m.autoSet ? h('b', null, t('Set to merge when the pipeline passes')) : m.ready ? h('b', null, t('Ready to merge{target}', { target })) : h('b', null, t('Merge blocked')), !m.ready && !m.autoSet && m.reason && h('span', { class: 'dim' }, ` · ${m.reason}`)),
+            (can || ci === 'running' || ci === 'pending') && h('div', { class: 'mrw-opts' }, h('label', { class: 'check' }, remove, t('Delete source branch')), h('label', { class: 'check' }, squash, t('Squash commits')))
           ),
           m.ready
-            ? h('button', { class: 'btn primary mrw-merge-btn', onClick: async (e) => (await confirmBox(`Merge ${mrRef(it)}${target} now?`, `${it.title}${squash.checked ? '\nCommits are squashed into one.' : ''}${remove.checked ? `\nThe branch ${d.source} is deleted afterwards.` : ''}`, 'Merge')) && act(e.currentTarget, 'merge', opts(), 'Merging…') }, icon('merge', 12), 'Merge now')
+            ? h('button', { class: 'btn primary mrw-merge-btn', onClick: async (e) => (await confirmBox(t('Merge {ref}{target} now?', { ref: mrRef(it), target }), `${it.title}${squash.checked ? '\n' + t('Commits are squashed into one.') : ''}${remove.checked ? '\n' + t('The branch {branch} is deleted afterwards.', { branch: d.source }) : ''}`, t('Merge'))) && act(e.currentTarget, 'merge', opts(), t('Merging…')) }, icon('merge', 12), t('Merge now'))
             : m.canAuto && !m.autoSet
-              ? h('button', { class: 'btn primary mrw-merge-btn', title: 'GitLab merges it as soon as the pipeline passes', onClick: (e) => act(e.currentTarget, 'merge', { ...opts(), auto: true }, 'Setting…') }, h('span', { class: 'spinner sm' }), 'Merge when pipeline passes')
+              ? h('button', { class: 'btn primary mrw-merge-btn', title: t('GitLab merges it as soon as the pipeline passes'), onClick: (e) => act(e.currentTarget, 'merge', { ...opts(), auto: true }, t('Setting…')) }, h('span', { class: 'spinner sm' }), t('Merge when pipeline passes'))
               : !m.autoSet && (ci === 'running' || ci === 'pending')
-                ? h('button', { class: 'btn primary mrw-merge-btn', title: 'Merges in the background as soon as the pipeline passes (and whatever else it waits for)', onClick: async (e) => ((e.currentTarget.disabled = true), await queueMerge([it], false, opts()), toast(`${mrRef(it)} merges when the pipeline passes`)) }, h('span', { class: 'spinner sm' }), 'Merge when pipeline passes')
-                : !m.autoSet && h('button', { class: 'btn mrw-merge-btn', disabled: true, title: m.reason || '' }, icon('merge', 12), 'Merge')
+                ? h('button', { class: 'btn primary mrw-merge-btn', title: t('Merges in the background as soon as the pipeline passes (and whatever else it waits for)'), onClick: async (e) => ((e.currentTarget.disabled = true), await queueMerge([it], false, opts()), toast(t('{ref} merges when the pipeline passes', { ref: mrRef(it) }))) }, h('span', { class: 'spinner sm' }), t('Merge when pipeline passes'))
+                : !m.autoSet && h('button', { class: 'btn mrw-merge-btn', disabled: true, title: m.reason || '' }, icon('merge', 12), t('Merge'))
         )
       )
     }
@@ -7226,7 +7283,7 @@ async function reviewDetailSheet(it, tab = 'overview') {
   }
 
   function commitsPane() {
-    if (!d.commits.length) return h('div', { class: 'empty' }, 'No commits')
+    if (!d.commits.length) return h('div', { class: 'empty' }, t('No commits'))
     return h(
       'div',
       { class: 'mrd-commits' },
@@ -7235,7 +7292,7 @@ async function reviewDetailSheet(it, tab = 'overview') {
           'button',
           {
             class: 'mrd-commit',
-            title: localRepo ? 'Show this commit' : 'Open this commit in the browser',
+            title: localRepo ? t('Show this commit') : t('Open this commit in the browser'),
             onClick: async () => {
               if (localRepo && (await call('commitShow', { hash: c.sha }).then(() => true, () => false))) return openCommit(c.sha)
               openLink(it.provider === 'github' ? `${d.url}/commits/${c.sha}` : `${d.url}/diffs?commit_id=${c.sha}`)
@@ -7254,11 +7311,11 @@ async function reviewDetailSheet(it, tab = 'overview') {
   const bar = h(
     'div',
     { class: 'mrd-bar' },
-    h('span', { class: 'dim grow' }, own ? `Your own ${mrNoun(it)}` : d.state !== 'open' ? `This ${mrNoun(it)} is ${d.state}` : 'Approve and merge are in the box under the description'),
-    h('button', { class: 'btn', title: 'AI explains what this changes and why, in plain words', onClick: () => explainSheet({ item: it }) }, icon('wand', 12), 'Explain'),
-    h('button', { class: 'btn', onClick: () => aiReviewModal(it) }, icon('wand', 12), 'AI review'),
-    d.state === 'open' && h('button', { class: 'btn', onClick: () => reviewDialog(it, 'comment') }, icon('edit', 12), 'Comment'),
-    d.state === 'open' && !own && h('button', { class: 'btn', onClick: () => reviewDialog(it, 'changes') }, icon('x', 12), 'Request changes')
+    h('span', { class: 'dim grow' }, own ? t('Your own {noun}', { noun: mrNoun(it) }) : d.state !== 'open' ? (d.state === 'merged' ? t('This {noun} is merged', { noun: mrNoun(it) }) : d.state === 'closed' ? t('This {noun} is closed', { noun: mrNoun(it) }) : t('This {noun} is {state}', { noun: mrNoun(it), state: d.state })) : t('Approve and merge are in the box under the description')),
+    h('button', { class: 'btn', title: t('AI explains what this changes and why, in plain words'), onClick: () => explainSheet({ item: it }) }, icon('wand', 12), t('Explain')),
+    h('button', { class: 'btn', onClick: () => aiReviewModal(it) }, icon('wand', 12), t('AI review')),
+    d.state === 'open' && h('button', { class: 'btn', onClick: () => reviewDialog(it, 'comment') }, icon('edit', 12), t('Comment')),
+    d.state === 'open' && !own && h('button', { class: 'btn', onClick: () => reviewDialog(it, 'changes') }, icon('x', 12), t('Request changes'))
   )
   append(clear(body), [head, tabs, pane, bar])
   go(tab === 'commits' ? 'commits' : 'overview')
@@ -7272,7 +7329,7 @@ const ciIcon = (st) => icon(st === 'passed' ? 'check' : st === 'failed' ? 'x' : 
    Pipelines: GitHub Actions runs / GitLab pipelines, their jobs and logs
    ========================================================================= */
 
-const PIPE_LABEL = { passed: 'Passed', failed: 'Failed', running: 'Running', pending: 'Pending', canceled: 'Canceled', manual: 'Manual' }
+const PIPE_LABEL = { passed: t('Passed'), failed: t('Failed'), running: t('Running'), pending: t('Pending'), canceled: t('Canceled'), manual: t('Manual') }
 const dur = (s) => (s == null ? '' : s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`)
 const pipeBadge = (st) => h('span', { class: `ci ci-${st} pipe-state` }, ciIcon(st), PIPE_LABEL[st] || st)
 
@@ -7280,12 +7337,12 @@ const pipeBadge = (st) => h('span', { class: `ci ci-${st} pipe-state` }, ciIcon(
    Pipelines tab: the latest runs of every branch in one place
    ========================================================================= */
 let pipesTimer = null
-const PIPE_SRC = { push: 'push', merge_request_event: 'merge request', pull_request: 'pull request', schedule: 'schedule', web: 'run by hand', api: 'API', trigger: 'trigger', pipeline: 'downstream', parent_pipeline: 'child', workflow_dispatch: 'run by hand', chat: 'chat', external: 'external' }
+const PIPE_SRC = { push: t('push'), merge_request_event: t('merge request'), pull_request: t('pull request'), schedule: t('schedule'), web: t('run by hand'), api: 'API', trigger: t('trigger'), pipeline: t('downstream'), parent_pipeline: t('child'), workflow_dispatch: t('run by hand'), chat: t('chat'), external: t('external') }
 /** A pipeline's ref the way GitLab shows it: a merge request as !N, a tag with its icon, else the branch. */
 function refChip(p) {
   const mr = String(p.branch || '').match(/^refs\/merge-requests\/(\d+)\/(head|merge)$/)
   if (mr) return h('span', { class: 'ref pc-mr', title: p.branch }, icon('pr', 10), h('span', { class: 'ref-t' }, `!${mr[1]}`))
-  if (p.tag) return h('span', { class: 'ref tag', title: `Tag ${p.branch}` }, icon('tag', 10), h('span', { class: 'ref-t' }, p.branch))
+  if (p.tag) return h('span', { class: 'ref tag', title: t('Tag {name}', { name: p.branch }) }, icon('tag', 10), h('span', { class: 'ref-t' }, p.branch))
   return h('span', { class: 'ref', title: p.branch }, icon('branch', 10), h('span', { class: 'ref-t' }, p.branch || '?'))
 }
 // The last list per repository: the tab shows it at once, then refreshes in the background.
@@ -7325,7 +7382,7 @@ async function viewPipelinesTab() {
   if (!pipesLoading && !c?.error && (!c || !c.full || Date.now() - c.at > 4000)) refreshPipes(repo)
   if (!c?.data) {
     if (c?.error && !pipesLoading) {
-      root.append(h('div', { class: 'empty' }, icon('pipeline', 28), h('div', null, c.error), h('div', { class: 'dim' }, 'Pipelines show for repositories on GitHub or GitLab that your Git login can reach.'), h('button', { class: 'btn sm', style: { marginTop: '10px' }, onClick: () => (pipesCache.delete(repo), renderView({ force: true })) }, icon('refresh', 12), 'Try again')))
+      root.append(h('div', { class: 'empty' }, icon('pipeline', 28), h('div', null, c.error), h('div', { class: 'dim' }, t('Pipelines show for repositories on GitHub or GitLab that your Git login can reach.')), h('button', { class: 'btn sm', style: { marginTop: '10px' }, onClick: () => (pipesCache.delete(repo), renderView({ force: true })) }, icon('refresh', 12), t('Try again'))))
       return root
     }
     root.append(h('div', { class: 'skeleton-list' }, ...Array.from({ length: 6 }, () => h('div', { class: 'skeleton-row' }, h('span', { class: 'bar' })))))
@@ -7344,15 +7401,15 @@ async function viewPipelinesTab() {
     'div',
     { class: 'segmented rv-filter' },
     [
-      ['all', 'All'],
-      ['running', 'Running'],
-      ['failed', 'Failed'],
-      ['passed', 'Passed']
+      ['all', t('All')],
+      ['running', t('Running')],
+      ['failed', t('Failed')],
+      ['passed', t('Passed')]
     ].map(([k, l]) => h('button', { class: f.state === k ? 'on' : '', onClick: () => ((f.state = k), renderView({ force: true })) }, l, h('span', { class: `rv-n ${k === 'failed' && counts.failed ? 'hot-bad' : k === 'running' && counts.running ? 'hot' : ''}` }, String(counts[k]))))
   )
-  const search = h('input', { type: 'text', class: 'rv-search', placeholder: 'Filter by branch, title or who started it…', value: f.text, onInput: (e) => ((f.text = e.target.value), draw()) })
+  const search = h('input', { type: 'text', class: 'rv-search', placeholder: t('Filter by branch, title or who started it…'), value: f.text, onInput: (e) => ((f.text = e.target.value), draw()) })
   root.append(
-    h('div', { class: 'history-bar' }, chips, h('span', { class: 'grow' }), h('span', { class: 'dim', style: { fontSize: '11.5px' } }, `${data.kind === 'github' ? 'GitHub Actions' : 'GitLab CI'} · ${data.host}`), h('button', { class: 'btn sm', onClick: () => openLink(data.web) }, icon('open', 12), 'Open in browser'), h('button', { class: 'btn sm pipes-refresh', disabled: updating, title: updating ? 'Updating…' : 'Refresh', onClick: () => refreshPipes(repo).then(() => {}) }, updating ? h('span', { class: 'spinner sm' }) : icon('refresh', 12), updating ? 'Updating' : 'Refresh')),
+    h('div', { class: 'history-bar' }, chips, h('span', { class: 'grow' }), h('span', { class: 'dim', style: { fontSize: '11.5px' } }, `${data.kind === 'github' ? 'GitHub Actions' : 'GitLab CI'} · ${data.host}`), h('button', { class: 'btn sm', onClick: () => openLink(data.web) }, icon('open', 12), t('Open in browser')), h('button', { class: 'btn sm pipes-refresh', disabled: updating, title: updating ? t('Updating…') : t('Refresh'), onClick: () => refreshPipes(repo).then(() => {}) }, updating ? h('span', { class: 'spinner sm' }) : icon('refresh', 12), updating ? t('Updating') : t('Refresh'))),
     h('div', { class: 'rv-filters' }, h('div', { class: 'rv-search-wrap' }, icon('search', 12), search))
   )
   const list = h('div', { class: 'pipe-list' })
@@ -7361,21 +7418,21 @@ async function viewPipelinesTab() {
     const words = f.text.toLowerCase().split(/\s+/).filter(Boolean)
     const items = data.items.filter((p) => (f.state === 'all' || (f.state === 'running' ? p.state === 'running' || p.state === 'pending' : p.state === f.state)) && words.every((w) => `${p.branch} ${p.title} ${p.name} ${p.by} ${p.sha}`.toLowerCase().includes(w)))
     clear(list)
-    if (!items.length) return list.append(h('div', { class: 'empty' }, icon('check', 28), h('div', null, data.items.length ? 'Nothing matches' : 'No pipelines yet')))
-    list.append(h('div', { class: 'pc-head' }, h('span', null, 'Status'), h('span', null, 'Pipeline'), h('span', null, 'Branch / commit'), h('span', null, 'Stages'), h('span', null, 'Started by'), h('span')))
+    if (!items.length) return list.append(h('div', { class: 'empty' }, icon('check', 28), h('div', null, data.items.length ? t('Nothing matches') : t('No pipelines yet'))))
+    list.append(h('div', { class: 'pc-head' }, h('span', null, t('Status')), h('span', null, t('Pipeline')), h('span', null, t('Branch / commit')), h('span', null, t('Stages')), h('span', null, t('Started by')), h('span')))
     for (const p of items)
       list.append(
         h(
           'button',
           { class: `pipe-row pr-${p.state}`, onClick: () => openPipelines({ branch: p.branch, openId: p.id }) },
           // status, with how long it took and when
-          h('div', { class: 'pc-status' }, pipeBadge(p.state), h('div', { class: 'dim pc-time' }, p.duration != null && [icon('history', 10), dur(p.duration)]), h('div', { class: 'dim pc-time', title: new Date(p.at * 1000).toLocaleString() }, ago(p.finished || p.at))),
+          h('div', { class: 'pc-status' }, pipeBadge(p.state), h('div', { class: 'dim pc-time' }, p.duration != null && [icon('history', 10), dur(p.duration)]), h('div', { class: 'dim pc-time', title: new Date(p.at * 1000).toLocaleString(LANG) }, ago(p.finished || p.at))),
           // what it ran on: the commit's message, the pipeline number, what started it
           h('div', { class: 'pc-main' }, h('div', { class: 'ellipsis pc-title', title: p.commitTitle || p.title || '' }, p.commitTitle || p.title || p.name), h('div', { class: 'pc-sub' }, h('span', { class: 'pc-id' }, p.name), p.event && h('span', { class: 'pill pc-src' }, PIPE_SRC[p.event] || String(p.event).replace(/_/g, ' ')))),
           // branch, tag or merge request, and the commit
           h('div', { class: 'pc-ref' }, refChip(p), h('span', { class: 'mono dim pc-sha' }, icon('commit', 10), (p.sha || '').slice(0, 8))),
           // the stages, like GitLab's dots
-          h('div', { class: 'pc-stages' }, (p.stages || []).map((s) => h('span', { class: `pc-dot st-${s.state}`, title: `${s.name}: ${PIPE_LABEL[s.state] || s.state} (${s.jobs} job${s.jobs > 1 ? 's' : ''})` }, s.state === 'passed' ? icon('check', 9) : s.state === 'failed' ? icon('x', 9) : s.state === 'running' ? h('span', { class: 'spinner sm' }) : null))),
+          h('div', { class: 'pc-stages' }, (p.stages || []).map((s) => h('span', { class: `pc-dot st-${s.state}`, title: s.jobs > 1 ? t('{name}: {state} ({n} jobs)', { name: s.name, state: PIPE_LABEL[s.state] || s.state, n: s.jobs }) : t('{name}: {state} ({n} job)', { name: s.name, state: PIPE_LABEL[s.state] || s.state, n: s.jobs }) }, s.state === 'passed' ? icon('check', 9) : s.state === 'failed' ? icon('x', 9) : s.state === 'running' ? h('span', { class: 'spinner sm' }) : null))),
           // who started it
           h('div', { class: 'pc-by', title: p.byName || p.by || '' }, (p.by || p.byName) ? [h('span', { class: 'mrd-avatar' }, initials(p.byName || p.by)), h('span', { class: 'ellipsis' }, p.by || p.byName)] : null),
           icon('right', 14)
@@ -7391,7 +7448,7 @@ async function viewPipelinesTab() {
 /** Open the pipeline sheet: the list for the branch, or straight into one pipeline. */
 async function openPipelines({ branch, sha, openId } = {}) {
   const body = h('div', { class: 'pipes' }, h('div', { class: 'inline-skeleton' }, h('span'), h('span'), h('span')))
-  openSheet(`Pipelines · ${branch || state.status?.branch || 'HEAD'}`, body)
+  openSheet(t('Pipelines · {branch}', { branch: branch || state.status?.branch || 'HEAD' }), body)
   const sheet = state.sheets[state.sheets.length - 1]
   sheet.el.classList.add('wide-sheet')
   placeSheet(sheet.el)
@@ -7416,7 +7473,7 @@ async function openPipelines({ branch, sha, openId } = {}) {
       if (it) return showPipeline(it, data)
     }
     append(clear(body), [
-      h('div', { class: 'history-bar' }, h('span', { class: 'dim' }, `${data.items.length} recent on ${data.branch || 'all branches'}`), h('span', { class: 'grow' }), h('button', { class: 'btn sm', onClick: () => openLink(data.web) }, icon('open', 12), 'Open in browser'), h('button', { class: 'btn sm', onClick: showList }, icon('refresh', 12), 'Refresh')),
+      h('div', { class: 'history-bar' }, h('span', { class: 'dim' }, data.branch ? t('{n} recent on {branch}', { n: data.items.length, branch: data.branch }) : t('{n} recent on all branches', { n: data.items.length })), h('span', { class: 'grow' }), h('button', { class: 'btn sm', onClick: () => openLink(data.web) }, icon('open', 12), t('Open in browser')), h('button', { class: 'btn sm', onClick: showList }, icon('refresh', 12), t('Refresh'))),
       data.items.length
         ? h(
             'div',
@@ -7432,7 +7489,7 @@ async function openPipelines({ branch, sha, openId } = {}) {
               )
             )
           )
-        : h('div', { class: 'empty' }, icon('commit', 28), h('div', null, 'No pipelines for this branch yet'))
+        : h('div', { class: 'empty' }, icon('commit', 28), h('div', null, t('No pipelines for this branch yet')))
     ])
     if (data.items.some((p) => p.state === 'running' || p.state === 'pending')) later(showList, 10000)
   }
@@ -7451,11 +7508,11 @@ async function openPipelines({ branch, sha, openId } = {}) {
       const was = btn ? [...btn.childNodes] : null
       if (btn) {
         btn.disabled = true
-        append(clear(btn), [h('span', { class: 'spinner' }), 'Sending…'])
+        append(clear(btn), [h('span', { class: 'spinner' }), t('Sending…')])
       }
       try {
         await call('pipelineAct', { id: p.id, action, ...extra })
-        toast(`${label}. The pipeline updates here as it runs.`)
+        toast(t('{action}. The pipeline updates here as it runs.', { action: label }))
         p = { ...p, state: action === 'cancel' ? 'canceled' : 'pending' }
         later(() => showPipeline(p, data), 1200)
       } catch (e) {
@@ -7473,24 +7530,24 @@ async function openPipelines({ branch, sha, openId } = {}) {
       h(
         'div',
         { class: 'history-bar' },
-        h('button', { class: 'crumb', onClick: showList }, 'Pipelines'),
+        h('button', { class: 'crumb', onClick: showList }, t('Pipelines')),
         icon('right', 12),
         pipeBadge(p.state),
         h('b', null, p.name),
         h('span', { class: 'dim' }, [p.sha?.slice(0, 7), dur(p.duration)].filter(Boolean).join(' · ')),
         h('span', { class: 'grow' }),
-        failed.length > 0 && h('button', { class: 'btn sm', onClick: (e) => act('retryFailed', 'Retrying the failed jobs', {}, e.currentTarget) }, icon('refresh', 12), 'Retry failed'),
-        !running && h('button', { class: 'btn sm', onClick: (e) => act('retry', 'Pipeline restarted', {}, e.currentTarget) }, icon('refresh', 12), 'Retry all'),
-        running && h('button', { class: 'btn sm danger', onClick: async (e) => (await confirmBox(`Cancel pipeline ${p.name}?`, 'Running jobs are stopped.', 'Cancel pipeline', true)) && act('cancel', 'Pipeline canceled', {}, e.currentTarget) }, icon('x', 12), 'Cancel'),
-        h('button', { class: 'btn sm', onClick: () => openLink(p.url) }, icon('open', 12), 'Open')
+        failed.length > 0 && h('button', { class: 'btn sm', onClick: (e) => act('retryFailed', t('Retrying the failed jobs'), {}, e.currentTarget) }, icon('refresh', 12), t('Retry failed')),
+        !running && h('button', { class: 'btn sm', onClick: (e) => act('retry', t('Pipeline restarted'), {}, e.currentTarget) }, icon('refresh', 12), t('Retry all')),
+        running && h('button', { class: 'btn sm danger', onClick: async (e) => (await confirmBox(t('Cancel pipeline {name}?', { name: p.name }), t('Running jobs are stopped.'), t('Cancel pipeline'), true)) && act('cancel', t('Pipeline canceled'), {}, e.currentTarget) }, icon('x', 12), t('Cancel')),
+        h('button', { class: 'btn sm', onClick: () => openLink(p.url) }, icon('open', 12), t('Open'))
       ),
       failed.length > 0 &&
         h(
           'div',
           { class: 'pipe-failed' },
           icon('alert', 15),
-          h('div', { class: 'grow' }, h('b', null, `${plural(failed.length, 'job')} failed`), h('div', { class: 'dim' }, failed.map((j) => j.name).join(', '))),
-          h('button', { class: 'btn sm primary', onClick: () => showLog(p, failed[0], data) }, icon('alert', 12), 'Show the error')
+          h('div', { class: 'grow' }, h('b', null, failed.length === 1 ? t('{n} job failed', { n: failed.length }) : t('{n} jobs failed', { n: failed.length })), h('div', { class: 'dim' }, failed.map((j) => j.name).join(', '))),
+          h('button', { class: 'btn sm primary', onClick: () => showLog(p, failed[0], data) }, icon('alert', 12), t('Show the error'))
         ),
       h(
         'div',
@@ -7507,15 +7564,15 @@ async function openPipelines({ branch, sha, openId } = {}) {
                   'div',
                   { class: `pipe-job s-${j.state}`, role: 'button', tabindex: 0, onClick: () => showLog(p, j, data), onKeydown: (e) => e.key === 'Enter' && showLog(p, j, data) },
                   h('span', { class: `ci ci-${j.state} pipe-dot`, title: PIPE_LABEL[j.state] || j.state }, ciIcon(j.state)),
-                  h('span', { class: 'pipe-job-name' }, j.name, j.allowFailure && h('span', { class: 'dim' }, ' (allowed to fail)')),
+                  h('span', { class: 'pipe-job-name' }, j.name, j.allowFailure && h('span', { class: 'dim' }, ' ' + t('(allowed to fail)'))),
                   h('span', { class: 'dim mono' }, dur(j.duration)),
-                  j.state === 'failed' && h('button', { class: 'icon-btn', title: 'Retry this job', onClick: (e) => (e.stopPropagation(), act('retryJob', `Retrying ${j.name}`, { job: j.id }, e.currentTarget)) }, icon('refresh', 12))
+                  j.state === 'failed' && h('button', { class: 'icon-btn', title: t('Retry this job'), onClick: (e) => (e.stopPropagation(), act('retryJob', t('Retrying {name}', { name: j.name }), { job: j.id }, e.currentTarget)) }, icon('refresh', 12))
                 )
               )
           )
         )
       ),
-      !jobs.length && h('div', { class: 'empty' }, 'No jobs')
+      !jobs.length && h('div', { class: 'empty' }, t('No jobs'))
     ])
     if (running) later(() => showPipeline(p, data), 10000)
   }
@@ -7563,7 +7620,7 @@ async function openPipelines({ branch, sha, openId } = {}) {
     pre.classList.toggle('wrap', wrap.checked)
     wrap.addEventListener('change', () => (pre.classList.toggle('wrap', wrap.checked), store.set('pipeWrap', wrap.checked)))
     let findT = null
-    const find = h('input', { type: 'text', class: 'pl-find', placeholder: 'Find in log…', spellcheck: 'false' })
+    const find = h('input', { type: 'text', class: 'pl-find', placeholder: t('Find in log…'), spellcheck: 'false' })
     const found = h('span', { class: 'dim mono' })
     find.addEventListener('input', () => {
       clearTimeout(findT)
@@ -7576,7 +7633,7 @@ async function openPipelines({ branch, sha, openId } = {}) {
           row.classList.toggle('hit', !!hit)
           if (hit && !n++) first = row
         }
-        found.textContent = q ? (n ? plural(n, 'line') : 'no match') : ''
+        found.textContent = q ? (n ? (n === 1 ? t('{n} line', { n }) : t('{n} lines', { n })) : t('no match')) : ''
         first?.scrollIntoView({ block: 'center' })
       }, 200)
     })
@@ -7595,31 +7652,31 @@ async function openPipelines({ branch, sha, openId } = {}) {
       h(
         'div',
         { class: 'history-bar pipe-crumbs' },
-        h('button', { class: 'crumb', onClick: showList }, 'Pipelines'),
+        h('button', { class: 'crumb', onClick: showList }, t('Pipelines')),
         icon('right', 12),
         h('button', { class: 'crumb', onClick: () => showPipeline(p, data) }, p.name),
         icon('right', 12),
         pipeBadge(j.state),
         h('b', null, j.name),
-        live && h('span', { class: 'pl-live' }, h('i'), 'live'),
+        live && h('span', { class: 'pl-live' }, h('i'), t('live')),
         h('span', { class: 'grow' }),
-        j.state === 'failed' && h('button', { class: 'btn sm', onClick: async (e) => { const b = e.currentTarget; b.disabled = true; append(clear(b), [h('span', { class: 'spinner' }), 'Sending…']); try { await call('pipelineAct', { id: p.id, action: 'retryJob', job: j.id }); toast(`Retrying ${j.name}`); later(() => showPipeline({ ...p, state: 'pending' }, data), 1200) } catch (err) { toast(err.message, 'error'); b.disabled = false; append(clear(b), [icon('refresh', 12), 'Retry job']) } } }, icon('refresh', 12), 'Retry job'),
-        false && h('button', { class: 'btn sm', title: 'Jump to the first error line', onClick: () => pre.querySelector('.pl.bad')?.scrollIntoView({ block: 'center' }) }, icon('alert', 12), `${errors} error line${errors > 1 ? 's' : ''}`),
-        h('button', { class: 'btn sm', onClick: () => copy(r.log).then(() => toast('Log copied')) }, icon('copy', 12), 'Copy log'),
-        h('button', { class: 'btn sm', onClick: () => openLink(j.url) }, icon('open', 12), 'Open')
+        j.state === 'failed' && h('button', { class: 'btn sm', onClick: async (e) => { const b = e.currentTarget; b.disabled = true; append(clear(b), [h('span', { class: 'spinner' }), t('Sending…')]); try { await call('pipelineAct', { id: p.id, action: 'retryJob', job: j.id }); toast(t('Retrying {name}', { name: j.name })); later(() => showPipeline({ ...p, state: 'pending' }, data), 1200) } catch (err) { toast(err.message, 'error'); b.disabled = false; append(clear(b), [icon('refresh', 12), t('Retry job')]) } } }, icon('refresh', 12), t('Retry job')),
+        false && h('button', { class: 'btn sm', title: t('Jump to the first error line'), onClick: () => pre.querySelector('.pl.bad')?.scrollIntoView({ block: 'center' }) }, icon('alert', 12), errors > 1 ? t('{n} error lines', { n: errors }) : t('{n} error line', { n: errors })),
+        h('button', { class: 'btn sm', onClick: () => copy(r.log).then(() => toast(t('Log copied'))) }, icon('copy', 12), t('Copy log')),
+        h('button', { class: 'btn sm', onClick: () => openLink(j.url) }, icon('open', 12), t('Open'))
       ),
       h(
         'div',
         { class: 'pipe-logbar' },
         errors > 0
-          ? h('div', { class: 'pl-errnav' }, icon('alert', 13), h('b', null, plural(errors, 'error line')), h('button', { class: 'icon-btn', title: 'Previous error', onClick: () => goErr(-1) }, icon('left', 13)), counter, h('button', { class: 'icon-btn', title: 'Next error', onClick: () => goErr(1) }, icon('right', 13)), h('label', { class: 'check' }, onlyErr, 'Errors only'))
-          : h('div', { class: 'pl-errnav ok' }, icon('check', 13), live ? 'No errors so far' : 'No error lines found'),
+          ? h('div', { class: 'pl-errnav' }, icon('alert', 13), h('b', null, errors === 1 ? t('{n} error line', { n: errors }) : t('{n} error lines', { n: errors })), h('button', { class: 'icon-btn', title: t('Previous error'), onClick: () => goErr(-1) }, icon('left', 13)), counter, h('button', { class: 'icon-btn', title: t('Next error'), onClick: () => goErr(1) }, icon('right', 13)), h('label', { class: 'check' }, onlyErr, t('Errors only')))
+          : h('div', { class: 'pl-errnav ok' }, icon('check', 13), live ? t('No errors so far') : t('No error lines found')),
         h('span', { class: 'grow' }),
         find,
         found,
-        h('label', { class: 'check' }, wrap, 'Wrap')
+        h('label', { class: 'check' }, wrap, t('Wrap'))
       ),
-      r.truncated && h('div', { class: 'dim pipe-note' }, 'Showing the last part of a long log.'),
+      r.truncated && h('div', { class: 'dim pipe-note' }, t('Showing the last part of a long log.')),
       pre
     ])
     if (store.get('pipeOnlyErrors', false) && errors) (onlyErr.checked = true), pre.classList.add('only-bad')
@@ -7644,8 +7701,8 @@ async function openPipelines({ branch, sha, openId } = {}) {
 function ciBadge() {
   const ci = state.ci
   if (!ci || !ci.state || ci.sha !== state.status?.oid) return null
-  const label = { passed: 'CI passed', failed: 'CI failed', running: 'CI running', canceled: 'CI canceled' }[ci.state]
-  return h('button', { class: `ci ci-${ci.state}`, title: `${label} for ${ci.sha.slice(0, 7)}. Click to see the pipeline.`, onClick: () => openPipelines({ sha: ci.sha }) }, ciIcon(ci.state), label)
+  const label = { passed: t('CI passed'), failed: t('CI failed'), running: t('CI running'), canceled: t('CI canceled') }[ci.state]
+  return h('button', { class: `ci ci-${ci.state}`, title: t('{status} for {sha}. Click to see the pipeline.', { status: label, sha: ci.sha.slice(0, 7) }), onClick: () => openPipelines({ sha: ci.sha }) }, ciIcon(ci.state), label)
 }
 let ciLoading = false
 async function loadCi() {
@@ -7687,11 +7744,11 @@ async function undoLast() {
     return toast(e.message, 'error')
   }
   if (u.blocked) return toast(u.blocked, 'error')
-  const keep = u.mode === 'soft' ? 'Its changes stay staged, ready to commit again.' : u.mode === 'switch' ? '' : 'Uncommitted changes are kept.'
-  const what = u.description || `The branch goes back to ${u.to.slice(0, 7)}. ${keep}`
-  if (!(await confirmBox('Undo the last action?', `${u.what}\n${ago(u.at)}\n\n${what}\nThe Reflog tab can take you forward again.`, 'Undo'))) return
+  const keep = u.mode === 'soft' ? t('Its changes stay staged, ready to commit again.') : u.mode === 'switch' ? '' : t('Uncommitted changes are kept.')
+  const what = u.description || t('The branch goes back to {sha}.', { sha: u.to.slice(0, 7) }) + ' ' + keep
+  if (!(await confirmBox(t('Undo the last action?'), `${u.what}\n${ago(u.at)}\n\n${what}\n` + t('The Reflog tab can take you forward again.'), t('Undo')))) return
   state.history.stale = true
-  run('undoLast', {}, { success: `Undone: ${u.what.split(':')[0]}` })
+  run('undoLast', {}, { success: t('Undone: {what}', { what: u.what.split(':')[0] }) })
 }
 
 async function cleanupBranches() {
@@ -7701,8 +7758,8 @@ async function cleanupBranches() {
   } catch (e) {
     return toast(e.message, 'error')
   }
-  const rows = [...c.gone.map((n) => ({ name: n, why: 'deleted on the server', force: true })), ...c.merged.filter((n) => !c.gone.includes(n)).map((n) => ({ name: n, why: `merged into ${c.base}` }))]
-  if (!rows.length) return toast(`No merged or gone branches (compared with ${c.base}).`)
+  const rows = [...c.gone.map((n) => ({ name: n, why: t('deleted on the server'), force: true })), ...c.merged.filter((n) => !c.gone.includes(n)).map((n) => ({ name: n, why: t('merged into {branch}', { branch: c.base }) }))]
+  if (!rows.length) return toast(t('No merged or gone branches (compared with {branch}).', { branch: c.base }))
   closeOverlays()
   const checks = rows.map((r) => ({ ...r, box: h('input', { type: 'checkbox', checked: true }) }))
   const close = () => {
@@ -7713,13 +7770,13 @@ async function cleanupBranches() {
   const box = h(
     'div',
     { class: 'dialog', role: 'dialog' },
-    h('h3', null, 'Clean up branches'),
-    h('p', null, `Local branches already merged into ${c.base}, or whose remote branch was deleted. Their commits stay reachable in the Reflog for a while.`),
+    h('h3', null, t('Clean up branches')),
+    h('p', null, t('Local branches already merged into {branch}, or whose remote branch was deleted. Their commits stay reachable in the Reflog for a while.', { branch: c.base })),
     h('div', { class: 'cleanup-list' }, checks.map((r) => h('label', { class: 'check cleanup-row' }, r.box, h('span', { class: 'mono grow ellipsis' }, r.name), h('span', { class: `pill ${r.force ? 'role-review' : ''}` }, r.why)))),
     h(
       'div',
       { class: 'buttons' },
-      h('button', { type: 'button', class: 'btn', onClick: close }, 'Cancel'),
+      h('button', { type: 'button', class: 'btn', onClick: close }, t('Cancel')),
       h(
         'button',
         {
@@ -7732,12 +7789,12 @@ async function cleanupBranches() {
             const res = await run('branchDeleteMany', { names: pick.map((r) => r.name), force: pick.filter((r) => r.force).map((r) => r.name) }, { quiet: true })
             if (res) {
               const bad = res.filter((x) => !x.ok)
-              toast(bad.length ? `Deleted ${res.length - bad.length}; kept ${bad.map((b) => b.name).join(', ')}:\n${bad[0].error}` : `Deleted ${res.length} branch${res.length > 1 ? 'es' : ''}`, bad.length ? 'error' : 'ok')
+              toast(bad.length ? t('Deleted {n}; kept {names}:', { n: res.length - bad.length, names: bad.map((b) => b.name).join(', ') }) + `\n${bad[0].error}` : res.length > 1 ? t('Deleted {n} branches', { n: res.length }) : t('Deleted {n} branch', { n: res.length }), bad.length ? 'error' : 'ok')
             }
           }
         },
         icon('trash', 13),
-        'Delete selected'
+        t('Delete selected')
       )
     )
   )
@@ -7752,9 +7809,9 @@ function conflictSides(block) {
   const s = st.sides || {}
   const cur = s.current || (block?.oursLabel && block.oursLabel !== 'HEAD' ? block.oursLabel : st.branch) || 'HEAD'
   const inc = s.incoming || block?.theirsLabel || 'incoming'
-  return { current: cur, incoming: inc, op: { merge: 'Merging', rebase: 'Rebasing', 'cherry-pick': 'Cherry-picking', revert: 'Reverting' }[st.state] || 'Merging' }
+  return { current: cur, incoming: inc, op: { merge: t('Merging'), rebase: t('Rebasing'), 'cherry-pick': t('Cherry-picking'), revert: t('Reverting') }[st.state] || t('Merging') }
 }
-const sideChip = (kind, name) => h('span', { class: `side-chip ${kind}` }, h('span', { class: 'side-k' }, kind === 'current' ? 'Current' : 'Incoming'), h('span', { class: 'side-n mono', title: name }, name))
+const sideChip = (kind, name) => h('span', { class: `side-chip ${kind}` }, h('span', { class: 'side-k' }, kind === 'current' ? t('Current') : t('Incoming')), h('span', { class: 'side-n mono', title: name }, name))
 
 /* ---------- conflicts: the parts that need no choice ---------- */
 /** A file with conflict markers → plain text runs and blocks { ours, base, theirs, labels }. */
@@ -7867,10 +7924,10 @@ async function resetTo(hash, mode = 'mixed') {
   return new Promise((resolve) => {
     let pick = mode
     const opts = [
-      ['soft', 'Keep the changes, staged', 'The commits are undone; their changes wait in Staged, ready to commit again.'],
-      ['mixed', 'Keep the changes, not staged', 'The commits are undone; their changes stay in your files. Recommended.'],
-      ['keep', 'Keep only my uncommitted work', 'The commits and their changes go; files you are editing now stay (stops if they would be overwritten).'],
-      ['hard', 'Throw the changes away', `The commits and ${files ? `your ${files} uncommitted file${files > 1 ? 's' : ''}` : 'any uncommitted change'} are gone from your files.`]
+      ['soft', t('Keep the changes, staged'), t('The commits are undone; their changes wait in Staged, ready to commit again.')],
+      ['mixed', t('Keep the changes, not staged'), t('The commits are undone; their changes stay in your files. Recommended.')],
+      ['keep', t('Keep only my uncommitted work'), t('The commits and their changes go; files you are editing now stay (stops if they would be overwritten).')],
+      ['hard', t('Throw the changes away'), files ? (files > 1 ? t('The commits and your {n} uncommitted files are gone from your files.', { n: files }) : t('The commits and your {n} uncommitted file are gone from your files.', { n: files })) : t('The commits and any uncommitted change are gone from your files.')]
     ]
     const list = h('div', { class: 'choice-list' })
     const draw = () => {
@@ -7886,12 +7943,12 @@ async function resetTo(hash, mode = 'mixed') {
         )
     }
     const what = h('div', { class: 'choice-what' })
-    const go = h('button', { class: 'btn primary', onClick: () => finish(true) }, 'Reset')
+    const go = h('button', { class: 'btn primary', onClick: () => finish(true) }, t('Reset'))
     const sync = () => {
       go.className = `btn ${pick === 'hard' ? 'danger' : 'primary'}`
       clear(what).append(
         icon(pick === 'hard' ? 'alert' : 'undo', 13),
-        h('span', null, `${leaving != null ? `${leaving} commit${leaving === 1 ? '' : 's'} leave ${cur}` : `${cur} moves to ${short}`}. `, pick === 'hard' ? 'Uncommitted changes cannot be recovered; the commits can, from Reflog.' : 'You can get the commits back with Undo or from Reflog.')
+        h('span', null, leaving != null ? (leaving === 1 ? t('{n} commit leaves {branch}.', { n: leaving, branch: cur }) : t('{n} commits leave {branch}.', { n: leaving, branch: cur })) : t('{branch} moves to {ref}.', { branch: cur, ref: short }), ' ', pick === 'hard' ? t('Uncommitted changes cannot be recovered; the commits can, from Reflog.') : t('You can get the commits back with Undo or from Reflog.'))
       )
     }
     draw()
@@ -7904,10 +7961,10 @@ async function resetTo(hash, mode = 'mixed') {
       if (!ok) return
       if (state.sheets.length) closeSheet()
       resetHistory()
-      run('reset', { hash, mode: pick }, { success: `Reset ${cur} to ${short} (${pick})` })
+      run('reset', { hash, mode: pick }, { success: t('Reset {branch} to {ref} ({mode})', { branch: cur, ref: short, mode: pick }) })
     }
     const onKey = (e) => isTopOverlay(overlay) && (e.key === 'Escape' ? close() : e.key === 'Enter' && pick !== 'hard' && finish(true))
-    const box = h('div', { class: 'dialog choice-dialog', role: 'dialog' }, h('h3', null, `Reset ${cur} to ${short}?`), list, what, h('div', { class: 'buttons' }, h('button', { class: 'btn', onClick: close }, 'Cancel'), h('span', { class: 'grow' }), go))
+    const box = h('div', { class: 'dialog choice-dialog', role: 'dialog' }, h('h3', null, t('Reset {branch} to {ref}?', { branch: cur, ref: short })), list, what, h('div', { class: 'buttons' }, h('button', { class: 'btn', onClick: close }, t('Cancel')), h('span', { class: 'grow' }), go))
     const overlay = h('div', { class: 'overlay', onMousedown: (e) => e.target === overlay && close() }, box)
     mountOverlay(overlay, close)
     document.addEventListener('keydown', onKey)
@@ -7917,11 +7974,11 @@ async function resetTo(hash, mode = 'mixed') {
 /* ---------- the git commands that ran ---------- */
 async function openCmdLog() {
   const body = h('div', { class: 'cmd-log' }, h('div', { class: 'inline-skeleton', style: { margin: '12px' } }, h('span'), h('span')))
-  openSheet('Git commands', body, [
+  openSheet(t('Git commands'), body, [
     h('label', { class: 'check sm' }, (() => {
-      const c = h('input', { type: 'checkbox', checked: !!store.get('showCmds', false), onChange: (e) => (store.set('showCmds', e.target.checked), toast(e.target.checked ? 'Each action now shows its git command' : 'Commands hidden')) })
+      const c = h('input', { type: 'checkbox', checked: !!store.get('showCmds', false), onChange: (e) => (store.set('showCmds', e.target.checked), toast(e.target.checked ? t('Each action now shows its git command') : t('Commands hidden'))) })
       return c
-    })(), 'Show with each action')
+    })(), t('Show with each action'))
   ])
   let list
   try {
@@ -7929,9 +7986,9 @@ async function openCmdLog() {
   } catch (e) {
     return append(clear(body), [h('div', { class: 'empty' }, e.message)])
   }
-  if (!list.length) return append(clear(body), [h('div', { class: 'empty' }, icon('history', 28), h('div', null, 'No git commands yet'), h('div', { class: 'dim' }, 'Fetch, commit, merge… each shows up here with the exact command.'))])
+  if (!list.length) return append(clear(body), [h('div', { class: 'empty' }, icon('history', 28), h('div', null, t('No git commands yet')), h('div', { class: 'dim' }, t('Fetch, commit, merge… each shows up here with the exact command.')))])
   clear(body).append(
-    h('p', { class: 'dim cmd-lead' }, 'The commands Git Control ran for you, newest first. Reading commands (status, log…) are left out.'),
+    h('p', { class: 'dim cmd-lead' }, t('The commands Git Control ran for you, newest first. Reading commands (status, log…) are left out.')),
     ...list
       .slice()
       .reverse()
@@ -7939,10 +7996,10 @@ async function openCmdLog() {
         h(
           'div',
           { class: `cmd-row ${c.code === 0 ? '' : 'bad'}` },
-          h('span', { class: 'cmd-t dim' }, new Date(c.at).toLocaleTimeString()),
+          h('span', { class: 'cmd-t dim' }, new Date(c.at).toLocaleTimeString(LANG)),
           h('code', { class: 'grow cmd-c', title: c.cmd }, c.cmd),
-          h('span', { class: 'dim cmd-ms' }, c.code === 0 ? `${c.ms} ms` : `exit ${c.code}`),
-          iconBtn('copy', 'Copy the command', () => copy(c.cmd))
+          h('span', { class: 'dim cmd-ms' }, c.code === 0 ? t('{n} ms', { n: c.ms }) : t('exit {code}', { code: c.code })),
+          iconBtn('copy', t('Copy the command'), () => copy(c.cmd))
         )
       )
   )
@@ -7960,13 +8017,13 @@ const cfLog = new Map()
 /** The conflicts of the operation in progress, in one place: every file, all at once or one by one, then Commit. */
 function openConflicts() {
   const st = state.status
-  if (!st?.state) return toast('Nothing is being merged right now')
+  if (!st?.state) return toast(t('Nothing is being merged right now'))
   const files = st.files.filter((f) => f.conflict)
   const sides = conflictSides()
   const opKey = `${st.state}:${sides.incoming}>${sides.current}`
   if (cfLog.key !== opKey) (cfLog.clear(), (cfLog.key = opKey)) // a new merge starts clean
   const body = h('div', { class: 'cf-hub' })
-  const finishLabel = st.state === 'merge' ? 'Commit merge' : 'Continue'
+  const finishLabel = st.state === 'merge' ? t('Commit merge') : t('Continue')
   let busy = false
   // while an action runs, every button on the page shows it cannot be pressed
   const setBusyPage = (on) => body.querySelectorAll('button').forEach((b) => (b.disabled = on))
@@ -7995,7 +8052,7 @@ function openConflicts() {
         cfLog.set(p, side === 'ours' ? 'current' : 'incoming')
         n++
       }
-      toast(`Kept ${name} in ${n} file${n > 1 ? 's' : ''}`)
+      toast(n > 1 ? t('Kept {name} in {n} files', { name, n }) : t('Kept {name} in {n} file', { name, n }))
     } catch (e) {
       toast(e.message, 'error')
     } finally {
@@ -8018,21 +8075,21 @@ function openConflicts() {
       const row = body.querySelector(`.cf-file[data-path="${CSS.escape(p)}"]`)
       row?.classList.add('cf-working')
       const tag = row?.querySelector('.cf-state')
-      if (tag) append(clear(tag), [h('span', { class: 'ai-dots' }, h('i'), h('i'), h('i')), 'AI is resolving…'])
+      if (tag) append(clear(tag), [h('span', { class: 'ai-dots' }, h('i'), h('i'), h('i')), t('AI is resolving…')])
       try {
         const r = await request('ai.resolveFile', { repo: state.repo, file: p }, 118000)
         await call('writeWorkFile', { file: p, text: r.text, stage: true })
         cfLog.set(p, 'ai')
         done++
         row?.classList.replace('cf-working', 'cf-ok')
-        if (tag) append(clear(tag), [icon('check', 11), `Resolved by ${r.agent}`])
+        if (tag) append(clear(tag), [icon('check', 11), t('Resolved by {agent}', { agent: r.agent })])
       } catch (e) {
         fails.push(`${basename(p)}: ${e.message}`)
         row?.classList.remove('cf-working')
-        if (tag) append(clear(tag), [icon('alert', 11), 'AI could not resolve it'])
+        if (tag) append(clear(tag), [icon('alert', 11), t('AI could not resolve it')])
       }
     }
-    if (done) toast(`AI resolved ${done} file${done > 1 ? 's' : ''}. Review them before you commit.`, 'ok', 7000)
+    if (done) toast(done > 1 ? t('AI resolved {n} files. Review them before you commit.', { n: done }) : t('AI resolved {n} file. Review them before you commit.', { n: done }), 'ok', 7000)
     if (fails.length) toast(fails.join('\n'), 'error', 9000)
     await refreshAll()
     busy = false
@@ -8047,8 +8104,12 @@ function openConflicts() {
       'p',
       { class: 'cf-lead' },
       files.length
-        ? `${sides.op} ${sides.incoming} into ${sides.current}. ${files.length} file${files.length > 1 ? 's' : ''} changed on both sides. Keep one side for all of them, let AI do it, or go file by file.`
-        : `Every conflict is resolved. Check the result, then ${finishLabel.toLowerCase()}.`
+        ? files.length > 1
+          ? t('{op} {incoming} into {current}. {n} files changed on both sides. Keep one side for all of them, let AI do it, or go file by file.', { op: sides.op, incoming: sides.incoming, current: sides.current, n: files.length })
+          : t('{op} {incoming} into {current}. {n} file changed on both sides. Keep one side for all of them, let AI do it, or go file by file.', { op: sides.op, incoming: sides.incoming, current: sides.current, n: files.length })
+        : st.state === 'merge'
+          ? t('Every conflict is resolved. Check the result, then commit the merge.')
+          : t('Every conflict is resolved. Check the result, then continue.')
     )
   )
   // one step for everything
@@ -8057,12 +8118,12 @@ function openConflicts() {
       h(
         'div',
         { class: 'cf-all' },
-        h('span', { class: 'cf-all-k' }, files.length > 1 ? `All ${files.length} files` : 'This file'),
+        h('span', { class: 'cf-all-k' }, files.length > 1 ? t('All {n} files', { n: files.length }) : t('This file')),
         h('span', { class: 'cf-auto-slot' }),
-        h('button', { class: 'btn sm cf-cur', title: `Keep ${sides.current}'s version wherever they conflict`, onClick: () => takeWhole(left, 'ours') }, icon('left', 12), `Accept all current`),
-        h('button', { class: 'btn sm cf-inc', title: `Keep ${sides.incoming}'s version wherever they conflict`, onClick: () => takeWhole(left, 'theirs') }, `Accept all incoming`, icon('right', 12)),
+        h('button', { class: 'btn sm cf-cur', title: t("Keep {branch}'s version wherever they conflict", { branch: sides.current }), onClick: () => takeWhole(left, 'ours') }, icon('left', 12), t('Accept all current')),
+        h('button', { class: 'btn sm cf-inc', title: t("Keep {branch}'s version wherever they conflict", { branch: sides.incoming }), onClick: () => takeWhole(left, 'theirs') }, t('Accept all incoming'), icon('right', 12)),
         h('span', { class: 'grow' }),
-        h('button', { class: 'btn sm ai-gen', title: 'AI merges both sides of every file; you review before committing', onClick: () => aiFiles(left) }, icon('wand', 13), files.length > 1 ? `AI resolve all ${files.length}` : 'AI resolve')
+        h('button', { class: 'btn sm ai-gen', title: t('AI merges both sides of every file; you review before committing'), onClick: () => aiFiles(left) }, icon('wand', 13), files.length > 1 ? t('AI resolve all {n}', { n: files.length }) : t('AI resolve'))
       )
     )
   // which parts need no choice: counted in the background, then one button applies them all
@@ -8076,12 +8137,12 @@ function openConflicts() {
       if (!a) continue
       total += a.auto
       const tag = body.querySelector(`.cf-file[data-path="${CSS.escape(p)}"] .cf-state`)
-      if (tag && !tag.textContent) tag.textContent = `${a.blocks.length} conflict${a.blocks.length === 1 ? '' : 's'}${a.auto ? ` · ${a.auto} automatic` : ''}`
+      if (tag && !tag.textContent) tag.textContent = (a.blocks.length === 1 ? t('{n} conflict', { n: a.blocks.length }) : t('{n} conflicts', { n: a.blocks.length })) + (a.auto ? ` · ${t('{n} automatic', { n: a.auto })}` : '')
     }
     const slot = body.querySelector('.cf-auto-slot')
     if (slot && total)
       slot.replaceWith(
-        h('button', { class: 'btn sm primary cf-auto', title: 'Parts where both sides made the same change, only one side really changed, or only spaces differ', onClick: () => applyAuto(paths.filter((p) => info[p]?.auto)) }, icon('check', 12), `Apply ${total} non-conflicting`)
+        h('button', { class: 'btn sm primary cf-auto', title: t('Parts where both sides made the same change, only one side really changed, or only spaces differ'), onClick: () => applyAuto(paths.filter((p) => info[p]?.auto)) }, icon('check', 12), t('Apply {n} non-conflicting', { n: total }))
       )
   }
   async function applyAuto(paths) {
@@ -8099,7 +8160,7 @@ function openConflicts() {
         n += r.applied
         if (r.applied && !r.left) (cfLog.set(p, 'auto'), whole++)
       }
-      toast(`Merged ${n} part${n === 1 ? '' : 's'} automatically${whole ? ` · ${whole} file${whole === 1 ? '' : 's'} done` : ''}. The rest need your choice.`)
+      toast((n === 1 ? t('Merged {n} part automatically', { n }) : t('Merged {n} parts automatically', { n })) + (whole ? ` · ${whole === 1 ? t('{n} file done', { n: whole }) : t('{n} files done', { n: whole })}` : '') + '. ' + t('The rest need your choice.'))
     } catch (e) {
       toast(e.message, 'error')
     } finally {
@@ -8112,7 +8173,7 @@ function openConflicts() {
   if (files.length) setTimeout(() => analyze(left), 0)
   // file by file
   if (files.length) {
-    body.append(h('div', { class: 'section-head' }, 'To resolve', h('span', { class: 'count' }, files.length)))
+    body.append(h('div', { class: 'section-head' }, t('To resolve'), h('span', { class: 'count' }, files.length)))
     const list = h('div', { class: 'cf-files' })
     for (const f of files)
       list.append(
@@ -8120,20 +8181,20 @@ function openConflicts() {
           'div',
           { class: 'cf-file', 'data-path': f.path },
           icon('alert', 13),
-          h('button', { class: 'link-btn grow ellipsis cf-name', title: `Resolve ${f.path} conflict by conflict`, onClick: () => resolveConflict(f.path) }, f.path),
+          h('button', { class: 'link-btn grow ellipsis cf-name', title: t('Resolve {file} conflict by conflict', { file: f.path }), onClick: () => resolveConflict(f.path) }, f.path),
           h('span', { class: 'cf-state dim' }),
-          h('button', { class: 'btn sm', title: `Keep ${sides.current}'s version of this file`, onClick: () => takeWhole([f.path], 'ours') }, 'Current'),
-          h('button', { class: 'btn sm', title: `Keep ${sides.incoming}'s version of this file`, onClick: () => takeWhole([f.path], 'theirs') }, 'Incoming'),
-          h('button', { class: 'btn sm', title: 'Let AI merge this file; you review it', onClick: () => aiFiles([f.path]) }, icon('wand', 12), 'AI'),
-          h('button', { class: 'btn sm primary', onClick: () => resolveConflict(f.path) }, icon('edit', 12), 'Resolve')
+          h('button', { class: 'btn sm', title: t("Keep {branch}'s version of this file", { branch: sides.current }), onClick: () => takeWhole([f.path], 'ours') }, t('Current')),
+          h('button', { class: 'btn sm', title: t("Keep {branch}'s version of this file", { branch: sides.incoming }), onClick: () => takeWhole([f.path], 'theirs') }, t('Incoming')),
+          h('button', { class: 'btn sm', title: t('Let AI merge this file; you review it'), onClick: () => aiFiles([f.path]) }, icon('wand', 12), 'AI'),
+          h('button', { class: 'btn sm primary', onClick: () => resolveConflict(f.path) }, icon('edit', 12), t('Resolve'))
         )
       )
     body.append(list)
   }
   // what is done: how, with a look at the result
   if (done.length) {
-    const how = { current: `Kept current (${sides.current})`, incoming: `Kept incoming (${sides.incoming})`, ai: 'Resolved by AI', manual: 'Resolved by you', auto: 'Merged automatically' }
-    body.append(h('div', { class: 'section-head' }, 'Resolved', h('span', { class: 'count' }, done.length)))
+    const how = { current: t('Kept current ({branch})', { branch: sides.current }), incoming: t('Kept incoming ({branch})', { branch: sides.incoming }), ai: t('Resolved by AI'), manual: t('Resolved by you'), auto: t('Merged automatically') }
+    body.append(h('div', { class: 'section-head' }, t('Resolved'), h('span', { class: 'count' }, done.length)))
     const list = h('div', { class: 'cf-files' })
     for (const [p, kind] of done)
       list.append(
@@ -8142,22 +8203,22 @@ function openConflicts() {
           { class: `cf-file cf-ok ${kind === 'ai' ? 'cf-ai' : ''}` },
           icon('check', 13),
           h('span', { class: 'grow ellipsis mono cf-name' }, p),
-          h('span', { class: 'cf-state' }, how[kind] || 'Resolved'),
-          h('button', { class: 'btn sm', title: 'See the result against your branch', onClick: () => showDiff(`${basename(p)} · result`, () => call('diff', { file: p, staged: true })) }, 'Review')
+          h('span', { class: 'cf-state' }, how[kind] || t('Resolved')),
+          h('button', { class: 'btn sm', title: t('See the result against your branch'), onClick: () => showDiff(t('{file} · result', { file: basename(p) }), () => call('diff', { file: p, staged: true })) }, t('Review'))
         )
       )
     body.append(list)
   }
-  if (!files.length && !done.length) body.append(h('div', { class: 'empty cf-done' }, icon('check', 28), h('div', null, 'All conflicts resolved')))
-  else if (!files.length) body.append(h('div', { class: 'cf-ready' }, icon('check', 16), h('span', null, 'All conflicts resolved'), h('span', { class: 'grow' }), h('button', { class: 'btn primary', onClick: () => finish() }, icon('check', 12), finishLabel)))
+  if (!files.length && !done.length) body.append(h('div', { class: 'empty cf-done' }, icon('check', 28), h('div', null, t('All conflicts resolved'))))
+  else if (!files.length) body.append(h('div', { class: 'cf-ready' }, icon('check', 16), h('span', null, t('All conflicts resolved')), h('span', { class: 'grow' }), h('button', { class: 'btn primary', onClick: () => finish() }, icon('check', 12), finishLabel)))
   function finish() {
     closeSheet()
     cfLog.clear()
-    run('continue', {}, { success: st.state === 'merge' ? 'Merge committed' : 'Continued' })
+    run('continue', {}, { success: st.state === 'merge' ? t('Merge committed') : t('Continued') })
   }
-  openSheet(`Conflicts · ${sides.incoming} → ${sides.current}`, body, [
-    h('button', { class: 'btn sm danger', onClick: async () => (await confirmBox(`Abort ${st.state}?`, `${sides.current} goes back to how it was before.`, 'Abort', true)) && (closeSheet(), cfLog.clear(), run('abort', {}, { success: 'Aborted' })) }, 'Abort'),
-    h('button', { class: 'btn sm primary', disabled: files.length > 0, title: files.length ? 'Resolve every file first' : '', onClick: finish }, icon('check', 12), finishLabel)
+  openSheet(t('Conflicts · {incoming} → {current}', { incoming: sides.incoming, current: sides.current }), body, [
+    h('button', { class: 'btn sm danger', onClick: async () => (await confirmBox(t('Abort {op}?', { op: st.state }), t('{branch} goes back to how it was before.', { branch: sides.current }), t('Abort'), true)) && (closeSheet(), cfLog.clear(), run('abort', {}, { success: t('Aborted') })) }, t('Abort')),
+    h('button', { class: 'btn sm primary', disabled: files.length > 0, title: files.length ? t('Resolve every file first') : '', onClick: finish }, icon('check', 12), finishLabel)
   ])
   const sheet = state.sheets[state.sheets.length - 1]
   sheet.el.classList.add('wide-sheet')
@@ -8200,8 +8261,8 @@ async function resolveConflict(file) {
   if (buf.length) parts.push(buf.join(eolStr))
   const blocks = parts.filter((x) => typeof x === 'object')
   if (!blocks.length) {
-    if (await confirmBox('No conflict markers left', `${file} has no conflict markers. Mark it as resolved?`, 'Mark resolved')) {
-      await run('stage', { files: [file] }, { success: 'Marked resolved' })
+    if (await confirmBox(t('No conflict markers left'), t('{file} has no conflict markers. Mark it as resolved?', { file }), t('Mark resolved'))) {
+      await run('stage', { files: [file] }, { success: t('Marked resolved') })
       nextConflict(file)
     }
     return
@@ -8211,11 +8272,11 @@ async function resolveConflict(file) {
   const all = (state.status?.files || []).filter((f) => f.conflict).map((f) => f.path)
   const pos = all.indexOf(file)
   const body = h('div', { class: 'resolver' })
-  const saveBtn = h('button', { class: 'btn sm primary', disabled: true, onClick: save }, icon('check', 12), all.length > 1 ? 'Save & next file' : 'Save & mark resolved')
+  const saveBtn = h('button', { class: 'btn sm primary', disabled: true, onClick: save }, icon('check', 12), all.length > 1 ? t('Save & next file') : t('Save & mark resolved'))
   const progress = h('span', { class: 'res-progress' })
   const update = () => {
     const done = blocks.filter((b) => b.choice).length
-    progress.textContent = `${done} of ${blocks.length} resolved`
+    progress.textContent = t('{done} of {total} resolved', { done, total: blocks.length })
     progress.classList.toggle('ok', done === blocks.length)
     saveBtn.disabled = done !== blocks.length
   }
@@ -8225,17 +8286,17 @@ async function resolveConflict(file) {
       { class: 'res-top' },
       h('div', { class: 'cf-route' }, sideChip('incoming', sides.incoming), icon('right', 14), sideChip('current', sides.current)),
       h('span', { class: 'grow' }),
-      pos >= 0 && all.length > 1 && h('span', { class: 'dim' }, `File ${pos + 1} of ${all.length}`),
-      h('button', { class: 'btn sm', title: `Keep ${sides.current}'s side in every conflict below`, onClick: () => blocks.forEach((b) => b.pick('ours')) }, 'Accept all current'),
-      h('button', { class: 'btn sm', title: `Keep ${sides.incoming}'s side in every conflict below`, onClick: () => blocks.forEach((b) => b.pick('theirs')) }, 'Accept all incoming'),
-      hasBase && h('button', { class: 'btn sm', title: 'Show what the file looked like before either side changed it', onClick: (e) => (body.classList.toggle('show-base'), e.currentTarget.classList.toggle('on')) }, icon('history', 12), 'Show base'),
-      h('button', { class: 'btn sm ai-gen', title: 'AI merges both sides of this file; you check and edit before saving', onClick: (e) => aiSuggest(e.currentTarget) }, icon('wand', 13), 'AI resolve')
+      pos >= 0 && all.length > 1 && h('span', { class: 'dim' }, t('File {n} of {total}', { n: pos + 1, total: all.length })),
+      h('button', { class: 'btn sm', title: t("Keep {branch}'s side in every conflict below", { branch: sides.current }), onClick: () => blocks.forEach((b) => b.pick('ours')) }, t('Accept all current')),
+      h('button', { class: 'btn sm', title: t("Keep {branch}'s side in every conflict below", { branch: sides.incoming }), onClick: () => blocks.forEach((b) => b.pick('theirs')) }, t('Accept all incoming')),
+      hasBase && h('button', { class: 'btn sm', title: t('Show what the file looked like before either side changed it'), onClick: (e) => (body.classList.toggle('show-base'), e.currentTarget.classList.toggle('on')) }, icon('history', 12), t('Show base')),
+      h('button', { class: 'btn sm ai-gen', title: t('AI merges both sides of this file; you check and edit before saving'), onClick: (e) => aiSuggest(e.currentTarget) }, icon('wand', 13), t('AI resolve'))
     )
   )
   blocks.forEach((b, n) => {
     const card = h('div', { class: 'res-block' })
     const result = h('textarea', { class: 'res-result mono', spellcheck: 'false', rows: 3 })
-    const resultBox = h('div', { class: 'res-result-box hidden' }, h('div', { class: 'res-label' }, 'Result', h('span', { class: 'dim' }, ' · you can edit it')), result)
+    const resultBox = h('div', { class: 'res-result-box hidden' }, h('div', { class: 'res-label' }, t('Result'), h('span', { class: 'dim' }, ` · ${t('you can edit it')}`)), result)
     result.addEventListener('input', () => {
       b.result = result.value.split('\n')
       b.choice ||= 'edit'
@@ -8244,8 +8305,8 @@ async function resolveConflict(file) {
     const side = (which, name, ls) =>
       h(
         'div',
-        { class: `res-side ${which === 'ours' ? 'current' : 'incoming'}`, role: 'button', tabindex: 0, title: `Use this (${name})`, onClick: () => b.pick(which), onKeydown: (e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), b.pick(which)) },
-        h('div', { class: 'res-side-head' }, h('span', { class: 'side-k' }, which === 'ours' ? 'Current' : 'Incoming'), h('span', { class: 'mono side-n', title: name }, `(${name})`), h('span', { class: 'grow' }), h('span', { class: 'res-pick' }, icon('check', 11), 'Use this')),
+        { class: `res-side ${which === 'ours' ? 'current' : 'incoming'}`, role: 'button', tabindex: 0, title: t('Use this ({name})', { name }), onClick: () => b.pick(which), onKeydown: (e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), b.pick(which)) },
+        h('div', { class: 'res-side-head' }, h('span', { class: 'side-k' }, which === 'ours' ? t('Current') : t('Incoming')), h('span', { class: 'mono side-n', title: name }, `(${name})`), h('span', { class: 'grow' }), h('span', { class: 'res-pick' }, icon('check', 11), t('Use this'))),
         h('pre', { class: 'res-code' }, ls.join('\n') || ' ')
       )
     b.pick = (choice) => {
@@ -8263,12 +8324,12 @@ async function resolveConflict(file) {
       h(
         'div',
         { class: 'res-head' },
-        h('strong', null, `Conflict ${n + 1} of ${blocks.length}`),
-        h('span', { class: 'pill res-auto', title: 'Only one side really changed this part (or both made the same change); it was merged for you. Pick a side to change it.' }, icon('check', 10), 'Merged automatically'),
+        h('strong', null, t('Conflict {n} of {total}', { n: n + 1, total: blocks.length })),
+        h('span', { class: 'pill res-auto', title: t('Only one side really changed this part (or both made the same change); it was merged for you. Pick a side to change it.') }, icon('check', 10), t('Merged automatically')),
         h('span', { class: 'grow' }),
-        h('div', { class: 'res-actions' }, ...[['ours', 'Accept current'], ['theirs', 'Accept incoming'], ['both', 'Accept both']].map(([c, l]) => h('button', { class: 'btn sm', 'data-c': c, onClick: () => b.pick(c) }, l)))
+        h('div', { class: 'res-actions' }, ...[['ours', t('Accept current')], ['theirs', t('Accept incoming')], ['both', t('Accept both')]].map(([c, l]) => h('button', { class: 'btn sm', 'data-c': c, onClick: () => b.pick(c) }, l)))
       ),
-      h('div', { class: 'res-sides' }, side('ours', sides.current, b.ours), hasBase && h('div', { class: 'res-side base' }, h('div', { class: 'res-side-head' }, h('span', { class: 'side-k' }, 'Base'), h('span', { class: 'side-n' }, '(before both)')), h('pre', { class: 'res-code' }, b.base.join('\n') || ' ')), side('theirs', sides.incoming, b.theirs)),
+      h('div', { class: 'res-sides' }, side('ours', sides.current, b.ours), hasBase && h('div', { class: 'res-side base' }, h('div', { class: 'res-side-head' }, h('span', { class: 'side-k' }, t('Base')), h('span', { class: 'side-n' }, t('(before both)'))), h('pre', { class: 'res-code' }, b.base.join('\n') || ' ')), side('theirs', sides.incoming, b.theirs)),
       resultBox
     )
     body.append(card)
@@ -8282,7 +8343,7 @@ async function resolveConflict(file) {
   async function aiSuggest(btn) {
     btn.disabled = true
     const t0 = Date.now()
-    const tick = () => append(clear(btn), [h('span', { class: 'ai-dots' }, h('i'), h('i'), h('i')), `AI is resolving… ${Math.floor((Date.now() - t0) / 1000)}s`])
+    const tick = () => append(clear(btn), [h('span', { class: 'ai-dots' }, h('i'), h('i'), h('i')), t('AI is resolving… {n}s', { n: Math.floor((Date.now() - t0) / 1000) })])
     tick()
     const timer = setInterval(tick, 1000)
     try {
@@ -8291,15 +8352,15 @@ async function resolveConflict(file) {
       aiArea.value = r.text
       aiArea.rows = Math.min(30, Math.max(8, r.text.split('\n').length))
       body.querySelectorAll('.res-block').forEach((x) => x.remove())
-      body.append(h('div', { class: 'res-block done' }, h('div', { class: 'res-head' }, h('strong', null, `Resolved by ${r.agent}`), h('span', { class: 'dim' }, ' · check it, edit if needed, then save')), h('div', { class: 'res-result-box' }, aiArea)))
-      progress.textContent = 'AI result ready'
+      body.append(h('div', { class: 'res-block done' }, h('div', { class: 'res-head' }, h('strong', null, t('Resolved by {agent}', { agent: r.agent })), h('span', { class: 'dim' }, ` · ${t('check it, edit if needed, then save')}`)), h('div', { class: 'res-result-box' }, aiArea)))
+      progress.textContent = t('AI result ready')
       progress.classList.add('ok')
       saveBtn.disabled = false
       btn.remove()
     } catch (e) {
       toast(e.message, 'error')
       btn.disabled = false
-      append(clear(btn), [icon('wand', 13), 'AI resolve'])
+      append(clear(btn), [icon('wand', 13), t('AI resolve')])
     } finally {
       clearInterval(timer)
     }
@@ -8309,7 +8370,7 @@ async function resolveConflict(file) {
     try {
       await call('writeWorkFile', { file, text: out, stage: true })
       cfLog.set(file, aiText != null ? 'ai' : 'manual')
-      toast(`${basename(file)} resolved`)
+      toast(t('{file} resolved', { file: basename(file) }))
       closeSheet()
       await refreshAll()
       nextConflict(file)
@@ -8317,7 +8378,7 @@ async function resolveConflict(file) {
       toast(e.message, 'error')
     }
   }
-  openSheet(`Resolve ${basename(file)}`, body, [progress, saveBtn])
+  openSheet(t('Resolve {file}', { file: basename(file) }), body, [progress, saveBtn])
   const sheet = state.sheets[state.sheets.length - 1]
   sheet.el.classList.add('wide-sheet')
   placeSheet(sheet.el)
@@ -8332,8 +8393,8 @@ function nextConflict(done) {
 /** A pull/merge request's diff; click a line to comment on it. */
 async function reviewDiffSheet(it) {
   openSheet(`${it.repo} ${it.provider === 'github' ? '#' : '!'}${it.number} · ${it.title}`, h('div', { class: 'inline-skeleton', style: { margin: '12px' } }, h('span'), h('span'), h('span')), [
-    h('button', { class: 'btn sm', onClick: () => aiReviewModal(it) }, icon('wand', 12), 'AI review'),
-    h('button', { class: 'btn sm primary', onClick: () => reviewDialog(it) }, icon('edit', 12), 'Review')
+    h('button', { class: 'btn sm', onClick: () => aiReviewModal(it) }, icon('wand', 12), t('AI review')),
+    h('button', { class: 'btn sm primary', onClick: () => reviewDialog(it) }, icon('edit', 12), t('Review'))
   ])
   const sheet = state.sheets[state.sheets.length - 1]
   sheet.el.classList.add('wide-sheet')
@@ -8347,11 +8408,11 @@ async function reviewDiffSheet(it) {
   }
   const wrap = renderDiff(diff, null, {
     onLine: async ({ path: file, side, line, text }) => {
-      const r = await dialog({ title: `Comment on ${basename(file)}:${line}`, message: text.slice(0, 200), fields: [{ key: 'body', label: 'Comment', type: 'textarea' }], ok: 'Comment' })
+      const r = await dialog({ title: t('Comment on {file}:{line}', { file: basename(file), line }), message: text.slice(0, 200), fields: [{ key: 'body', label: t('Comment'), type: 'textarea' }], ok: t('Comment') })
       if (!r?.body.trim()) return
       try {
         await request('reviews.lineComment', { item: it, path: file, line, side, body: r.body }, 90000)
-        toast('Comment posted')
+        toast(t('Comment posted'))
       } catch (e) {
         toast(e.message, 'error')
       }
@@ -8423,7 +8484,7 @@ $('#repoBtn').addEventListener('click', (e) => repoMenu(e.currentTarget))
 document.addEventListener('contextmenu', (e) => {
   if (e.defaultPrevented || e.target.closest('input, textarea, [contenteditable]')) return
   const row = e.target.closest('.item, .file-row, .side-item, .wt-row, .stash-row')
-  const more = row?.querySelector('button[aria-label="More"], button[aria-label="Resolve"]')
+  const more = row?.querySelector(`button[aria-label=${JSON.stringify(t('More'))}], button[aria-label=${JSON.stringify(t('Resolve'))}]`)
   if (!more) return
   e.preventDefault()
   menuPoint = { x: e.clientX, y: e.clientY }
@@ -8598,10 +8659,10 @@ function rowActions(c) {
   return h(
     'div',
     { class: 'row-actions', onClick: (e) => e.stopPropagation(), onContextmenu: (e) => e.stopPropagation() },
-    act('commit', 'Checkout this commit', () => checkoutCommit(c.hash)),
-    act('branch', 'New branch here', () => newBranch(c.hash)),
-    act('copy', 'Copy hash', () => copy(c.hash)),
-    act('more', 'More…', async (e) => {
+    act('commit', t('Checkout this commit'), () => checkoutCommit(c.hash)),
+    act('branch', t('New branch here'), () => newBranch(c.hash)),
+    act('copy', t('Copy hash'), () => copy(c.hash)),
+    act('more', t('More…'), async (e) => {
       const anchor = e.currentTarget
       const full = { ...c, ...(await call('commitShow', { hash: c.hash }).catch(() => ({ message: c.subject || '' }))), refs: c.refs, parents: c.parents }
       commitMenu(anchor, full)
@@ -8610,13 +8671,13 @@ function rowActions(c) {
 }
 
 /** The day of the first visible row, pinned over the list while it scrolls ("Today", "Yesterday", "Nov 5"). */
-function dayLabel(t) {
-  const d = new Date(t * 1000)
+function dayLabel(ts) {
+  const d = new Date(ts * 1000)
   const today = new Date()
   const days = Math.round((new Date(today.getFullYear(), today.getMonth(), today.getDate()) - new Date(d.getFullYear(), d.getMonth(), d.getDate())) / 86400000)
-  if (days === 0) return 'Today'
-  if (days === 1) return 'Yesterday'
-  return d.toLocaleDateString([], { weekday: days < 7 ? 'short' : undefined, month: 'short', day: 'numeric', year: d.getFullYear() === today.getFullYear() ? undefined : 'numeric' })
+  if (days === 0) return t('Today')
+  if (days === 1) return t('Yesterday')
+  return d.toLocaleDateString(LANG, { weekday: days < 7 ? 'short' : undefined, month: 'short', day: 'numeric', year: d.getFullYear() === today.getFullYear() ? undefined : 'numeric' })
 }
 let dateTick = 0
 function updateDateFloat() {
@@ -8704,27 +8765,27 @@ function commandPalette() {
   closeOverlays()
   const st = state.status || {}
   const cmds = [
-    ['Fetch all', 'fetch', () => run('fetch', {}, { success: 'Fetched' })],
-    ['Repo Overview', 'grid', () => reposOverview()],
-    ...(state.folder ? state.folder.children.filter((c) => !sameRepoPath(c.path, state.repo || '')).map((c) => [`Switch to repo ${c.name}`, 'folder', () => pickFolderRepo(c.path)]) : []),
-    [st.behind ? `Pull (${st.behind} waiting)` : 'Pull', 'pull', () => run('pull', {}, { success: 'Pulled' })],
-    ['Pull with rebase', 'pull', () => run('pull', { rebase: true }, { success: 'Pulled with rebase' })],
-    [st.ahead ? `Push (${st.ahead} waiting)` : 'Push', 'push', () => run('push', {}, { success: 'Pushed' })],
-    ['Stash changes', 'stash', () => run('stashSave', { untracked: true }, { success: 'Stashed' }), !st.files?.length],
-    ['Switch branch…', 'branch', () => quickSwitch($('.branch-chip') || $('#toolbar'))],
-    ['New branch…', 'plus', () => newBranch(st.oid || 'HEAD')],
-    ['Merge request…', 'pr', () => mergeRequestDialog()],
-    ['Go to the checked-out commit', 'current', () => goToHead()],
-    ['Search commits', 'search', () => (setTab('history'), setTimeout(() => searchBox?.focus(), 50))],
-    ['Undo the last action (Ctrl+Z)', 'undo', () => undoLast()],
-    ['Undo history: go back to any earlier point', 'history', () => setTab('reflog')],
-    ['Refresh', 'refresh', () => manualRefresh()],
-    [ROW_H > 28 ? 'Compact rows' : 'Comfortable rows', 'rows', () => setDensity(ROW_H > 28 ? 'compact' : 'comfortable')],
-    ['Keyboard shortcuts', 'keyboard', () => shortcutsHelp()],
-    ['Show git commands', 'history', () => openCmdLog()],
-    ...TABS.map(([id, label, ic]) => [`Go to ${label}`, ic, () => setTab(id)])
+    [t('Fetch all'), 'fetch', () => run('fetch', {}, { success: t('Fetched') })],
+    [t('Repo Overview'), 'grid', () => reposOverview()],
+    ...(state.folder ? state.folder.children.filter((c) => !sameRepoPath(c.path, state.repo || '')).map((c) => [t('Switch to repo {name}', { name: c.name }), 'folder', () => pickFolderRepo(c.path)]) : []),
+    [st.behind ? t('Pull ({n} waiting)', { n: st.behind }) : t('Pull'), 'pull', () => run('pull', {}, { success: t('Pulled') })],
+    [t('Pull with rebase'), 'pull', () => run('pull', { rebase: true }, { success: t('Pulled with rebase') })],
+    [st.ahead ? t('Push ({n} waiting)', { n: st.ahead }) : t('Push'), 'push', () => run('push', {}, { success: t('Pushed') })],
+    [t('Stash changes'), 'stash', () => run('stashSave', { untracked: true }, { success: t('Stashed') }), !st.files?.length],
+    [t('Switch branch…'), 'branch', () => quickSwitch($('.branch-chip') || $('#toolbar'))],
+    [t('New branch…'), 'plus', () => newBranch(st.oid || 'HEAD')],
+    [t('Merge request…'), 'pr', () => mergeRequestDialog()],
+    [t('Go to the checked-out commit'), 'current', () => goToHead()],
+    [t('Search commits'), 'search', () => (setTab('history'), setTimeout(() => searchBox?.focus(), 50))],
+    [t('Undo the last action (Ctrl+Z)'), 'undo', () => undoLast()],
+    [t('Undo history: go back to any earlier point'), 'history', () => setTab('reflog')],
+    [t('Refresh'), 'refresh', () => manualRefresh()],
+    [ROW_H > 28 ? t('Compact rows') : t('Comfortable rows'), 'rows', () => setDensity(ROW_H > 28 ? 'compact' : 'comfortable')],
+    [t('Keyboard shortcuts'), 'keyboard', () => shortcutsHelp()],
+    [t('Show git commands'), 'history', () => openCmdLog()],
+    ...TABS.map(([id, label, ic]) => [t('Go to {tab}', { tab: label }), ic, () => setTab(id)])
   ].filter((c) => !c[3])
-  const input = h('input', { type: 'text', class: 'pal-input', placeholder: 'Type a command…', spellcheck: 'false' })
+  const input = h('input', { type: 'text', class: 'pal-input', placeholder: t('Type a command…'), spellcheck: 'false' })
   const list = h('div', { class: 'pal-list', role: 'listbox' })
   let sel = 0
   let shown = cmds
@@ -8744,7 +8805,7 @@ function commandPalette() {
     shown.forEach((c, i) =>
       list.append(h('button', { type: 'button', class: `pal-item ${i === sel ? 'on' : ''}`, role: 'option', onMousemove: () => sel !== i && ((sel = i), draw()), onClick: () => runCmd(c) }, icon(c[1], 14), h('span', null, c[0])))
     )
-    if (!shown.length) list.append(h('div', { class: 'pal-none' }, 'No matching command'))
+    if (!shown.length) list.append(h('div', { class: 'pal-none' }, t('No matching command')))
     list.querySelector('.on')?.scrollIntoView({ block: 'nearest' })
   }
   const onKey = (e) => {
@@ -8763,7 +8824,7 @@ function commandPalette() {
     }
   }
   input.addEventListener('input', () => ((sel = 0), draw()))
-  const overlay = h('div', { class: 'overlay pal-overlay', onMousedown: (e) => e.target === overlay && done() }, h('div', { class: 'palette' }, input, list, h('div', { class: 'pal-foot' }, '↑↓ choose · Enter run · Esc close')))
+  const overlay = h('div', { class: 'overlay pal-overlay', onMousedown: (e) => e.target === overlay && done() }, h('div', { class: 'palette' }, input, list, h('div', { class: 'pal-foot' }, t('↑↓ choose · Enter run · Esc close'))))
   mountOverlay(overlay, done)
   document.addEventListener('keydown', onKey, true)
   draw()
@@ -8772,14 +8833,14 @@ function commandPalette() {
 
 function shortcutsHelp() {
   const rows = [
-    ['Ctrl+.', 'Commands'],
-    ['/', 'Search commits'],
-    ['↑ ↓ or j k', 'Move through the graph'],
-    ['Enter', 'Open the commit'],
-    ['Esc', 'Close'],
-    ['F5 / Ctrl+R', 'Refresh']
+    ['Ctrl+.', t('Commands')],
+    ['/', t('Search commits')],
+    ['↑ ↓ or j k', t('Move through the graph')],
+    ['Enter', t('Open the commit')],
+    ['Esc', t('Close')],
+    ['F5 / Ctrl+R', t('Refresh')]
   ]
-  const box = h('div', { class: 'dialog kbd-dialog' }, h('h3', null, 'Keyboard shortcuts'), h('div', { class: 'kbd-help' }, rows.map(([k, v]) => [h('kbd', null, k), h('span', null, v)])), h('div', { class: 'buttons' }, h('button', { class: 'btn primary', onClick: () => done() }, 'Close')))
+  const box = h('div', { class: 'dialog kbd-dialog' }, h('h3', null, t('Keyboard shortcuts')), h('div', { class: 'kbd-help' }, rows.map(([k, v]) => [h('kbd', null, k), h('span', null, v)])), h('div', { class: 'buttons' }, h('button', { class: 'btn primary', onClick: () => done() }, t('Close'))))
   const done = () => {
     overlay.remove()
     document.removeEventListener('keydown', onKey, true)
@@ -8797,6 +8858,9 @@ document.addEventListener('keydown', (e) => {
     manualRefresh()
   }
 })
+
+// Pick up the language setting; a change since the last start reloads once in the new language.
+if (hasOrca) request('ui.language', {}, 10000).then((r) => applyLang(r?.lang)).catch(() => {})
 
 ;(async () => {
   if (IN_TAB) {

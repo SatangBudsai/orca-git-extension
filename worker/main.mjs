@@ -4081,6 +4081,16 @@ Click to open Git Control`
   orca.panels.handle('ai.commitMessage', async ({ repo, agent, instructions, scope } = {}) =>
     aiCommitMessage(req(repo, 'repo'), AI[agent] ? agent : await agentSetting(), { instructions, scope })
   )
+  // The panel's language: Orca's plugin settings, or the Settings tab (which passes lang to change it)
+  orca.panels.handle('ui.language', async (input) => {
+    const lang = input?.lang
+    if (typeof lang === 'string' && /^[a-zA-Z-]{2,10}$/.test(lang)) await orca.host.call('settings.set', { key: 'language', value: lang }).catch(() => {})
+    try {
+      return { lang: (await orca.host.call('settings.get', {})).settings.language || 'en' }
+    } catch {
+      return { lang: 'en' }
+    }
+  })
   orca.panels.handle('ai.settings', async (input) => {
     const agent = input?.agent
     if (agent && AI[agent]) await orca.host.call('settings.set', { key: 'aiAgent', value: agent }).catch(() => {})

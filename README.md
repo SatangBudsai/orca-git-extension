@@ -171,6 +171,28 @@ When one cannot be reached, its row says why and what to do, step by step.
 
 AI features use the Claude Code or Codex CLI you have installed (Settings → Plugins → Git Control).
 
+## Languages
+
+Git Control speaks English, 简体中文 (Simplified Chinese), 日本語 (Japanese), Español (Spanish) and ไทย (Thai).
+English is the default; pick another in **Settings → Language** inside Git Control, or in Orca's plugin settings.
+Words people type as Git commands (commit, push, rebase, stash…) stay in English where developers in that language
+usually say them in English (Thai, Spanish), and follow the VS Code language pack where they are translated (Chinese, Japanese).
+
+### Add or improve a translation
+
+Each language is one file, `panel/locales/<language>.json`, mapping the English text to the translation:
+
+```json
+{ "Push {n} commits to {remote}": "推送 {n} 个提交到 {remote}" }
+```
+
+- Keep every `{placeholder}` and any leading/trailing space as it is.
+- An empty value shows the English, so a partial translation is fine.
+- New language: copy `zh-CN.json`, clear the values, translate, and add it to `LANGS` in `panel/app.js` and the
+  `language` setting in `orca-plugin.json`.
+- `node tools/i18n.mjs` shows what each language is missing; `--sync` adds new keys after the code changes;
+  `--check` fails on missing keys or wrong placeholders. Then `node tools/build.mjs`.
+
 ## Privacy
 
 Git Control runs `git`, and `gh` / `glab` when present, on your machine (and `git` on your SSH hosts,

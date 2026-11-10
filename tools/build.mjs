@@ -3,9 +3,9 @@
 //   panel/sidebar.html the right-sidebar panel (from index.html)
 // Orca's web client (orca serve in a browser, e.g. on a phone) loads a plugin frame as a single
 // sandboxed document that cannot fetch sibling files, so the styles and script are inlined here.
-// The desktop app loads the same files. Run after editing tab.html, index.html, style.css or app.js:
+// The desktop app loads the same files. Run after editing tab.html, index.html, style.css, app.js or locales/*.json:
 //   node tools/build.mjs
-import { readFileSync, writeFileSync } from 'node:fs'
+import { readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -14,8 +14,18 @@ const read = (f) => readFileSync(path.join(panel, f), 'utf8')
 
 // "</style" inside the CSS (a comment, a content string) would end the inline element early
 const css = read('style.css').replace(/<\/style/gi, '<\\/style')
+// Translations: every panel/locales/<lang>.json goes into app.js's LOCALES placeholder (empty values fall back to English)
+const locDir = path.join(panel, 'locales')
+const locales = Object.fromEntries(
+  readdirSync(locDir)
+    .filter((f) => f.endsWith('.json'))
+    .map((f) => [f.slice(0, -5), Object.fromEntries(Object.entries(JSON.parse(readFileSync(path.join(locDir, f), 'utf8'))).filter(([, v]) => typeof v === 'string' && v))])
+)
+const placeholder = /\/\*@locales\*\/[^]*?\/\*@end\*\//
+const app = read('app.js')
+if (!placeholder.test(app)) throw new Error('app.js no longer has the LOCALES placeholder')
 // "</script" inside the script would end the inline element early
-const js = read('app.js').replace(/<\/script/gi, '<\\/script')
+const js = app.replace(placeholder, () => '/*@locales*/ ' + JSON.stringify(locales) + ' /*@end*/').replace(/<\/script/gi, '<\\/script')
 
 const linkTag = /<link rel="stylesheet" href="style\.css"\s*\/?>/
 const scriptTag = /<script type="module" src="app\.js"><\/script>/

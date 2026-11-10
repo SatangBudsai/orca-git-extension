@@ -75,6 +75,27 @@
     ],
     "settings": [
       {
+        "key": "language",
+        "title": "Language",
+        "description": "Language of Git Control. Git terms that people type as commands (commit, push, rebase…) may stay in English.",
+        "type": "string",
+        "default": "en",
+        "enum": [
+          "en",
+          "zh-CN",
+          "ja",
+          "es",
+          "th"
+        ],
+        "enumLabels": [
+          "English",
+          "简体中文 (Simplified Chinese)",
+          "日本語 (Japanese)",
+          "Español (Spanish)",
+          "ไทย (Thai)"
+        ]
+      },
+      {
         "key": "aiAgent",
         "title": "AI agent",
         "description": "CLI used for AI commit messages and AI conflict resolution. It must be installed and signed in.",

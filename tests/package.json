@@ -9,7 +9,8 @@
     "build": "node ../tools/build.mjs",
     "mobile": "node mobile.mjs .. ../.orca/e2e",
     "servers": "node servers-ui.mjs ..",
-    "worker": "node worker-api.mjs github && node worker-api.mjs gitlab && node worker-ops.mjs && node remote-ops.mjs"
+    "worker": "node worker-api.mjs github && node worker-api.mjs gitlab && node worker-ops.mjs && node remote-ops.mjs",
+    "i18n": "node ../tools/i18n.mjs --check"
   },
   "devDependencies": {
     "puppeteer-core": "25.16.0"
