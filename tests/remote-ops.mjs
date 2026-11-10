@@ -6,9 +6,15 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
-const ROOT = path.dirname(new URL(import.meta.url).pathname)
+// the stand-in ssh below is a shell script, so this suite needs a POSIX shell
+if (process.platform === 'win32') {
+  console.log('remote-ops: skipped on Windows (the stand-in ssh is a shell script)')
+  process.exit(0)
+}
+
+const ROOT = path.dirname(fileURLToPath(import.meta.url))
 const W = fs.mkdtempSync(path.join(os.tmpdir(), 'gitx-remote-'))
 const gcfg = path.join(W, 'global.gitconfig')
 fs.writeFileSync(gcfg, `[user]\n\tname = T\n\temail = t@e\n[init]\n\tdefaultBranch = main\n`)
