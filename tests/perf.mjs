@@ -14,7 +14,8 @@ mkdirSync(SHOTS, { recursive: true })
 // Read-only timings: the worker must not take index locks or read the machine's system git config.
 process.env.GIT_CONFIG_NOSYSTEM = '1'
 process.env.GIT_OPTIONAL_LOCKS = '0'
-const CHROME = process.env.CHROME || 'C:/Program Files/Google/Chrome/Application/chrome.exe'
+// Chrome where each OS puts it (or CHROME=/path/to/chrome)
+const CHROME = process.env.CHROME || { win32: 'C:/Program Files/Google/Chrome/Application/chrome.exe', darwin: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' }[process.platform] || '/usr/bin/google-chrome'
 const REPO = process.argv[4]
 const repo = REPO
 const g = (...a) => execFileSync('git', a, { cwd: repo, encoding: 'utf8', env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } }).trim()

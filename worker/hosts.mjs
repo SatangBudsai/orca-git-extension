@@ -74,7 +74,8 @@ export function collect(bin, argv, { cwd, env, input, timeout = 30_000, signal, 
   return new Promise((resolve) => {
     let child
     try {
-      child = spawn(bin, argv, { cwd: cwd || undefined, windowsHide: true, env })
+      // a stand-in written in Node (tests, on any OS: Windows cannot run a #!/bin/sh one) runs with Node
+      child = /\.mjs$/.test(bin) ? spawn(process.execPath, [bin, ...argv], { cwd: cwd || undefined, windowsHide: true, env }) : spawn(bin, argv, { cwd: cwd || undefined, windowsHide: true, env })
     } catch (e) {
       return resolve({ code: null, out: Buffer.alloc(0), err: '', killedFor: null, spawnError: e })
     }

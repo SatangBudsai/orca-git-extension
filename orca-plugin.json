@@ -4,7 +4,7 @@
   "execution": "trusted-worker",
   "id": "git-control",
   "name": "Git Control",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "description": "A Git client inside Orca, with AI: commit graph, commits, merges with a side-by-side conflict resolver, interactive rebase, stashes and worktrees; GitHub and GitLab merge requests (approve, merge in the background, AI review before you open one) and every branch's pipelines; Repo Overview for many repos at once (grouped like Orca, fetch, pull, push and tag them together). Works on projects on your SSH servers too. Uses your existing Git login. In a full tab and the right sidebar.",
   "license": "MIT",
   "author": {
@@ -135,6 +135,10 @@
         "title": "Git: Open MR / PR"
       },
       {
+        "id": "checkReviews",
+        "title": "Git: Check MR / PR now"
+      },
+      {
         "id": "openRepos",
         "title": "Git: Open Repo Overview"
       }
@@ -153,6 +157,13 @@
         "icon": "bell",
         "tooltip": "MR / PR: merge and pull requests, and how many wait for you",
         "command": "openReviews"
+      },
+      {
+        "id": "reviews-check",
+        "text": "",
+        "icon": "refresh",
+        "tooltip": "Check merge and pull requests now",
+        "command": "checkReviews"
       },
       {
         "id": "repos",

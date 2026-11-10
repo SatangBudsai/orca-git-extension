@@ -9,19 +9,16 @@ import { mkdtempSync, writeFileSync, readFileSync, rmSync, mkdirSync } from 'nod
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
-// the stand-in ssh is a shell script, so this suite needs a POSIX shell
-if (process.platform === 'win32') {
-  console.log('servers-ui: skipped on Windows (the stand-in ssh is a shell script)')
-  process.exit(0)
-}
 const { default: puppeteer } = await import('puppeteer-core')
 
 const PLUGIN = path.resolve(process.argv[2] || '..')
 const SHOTS = process.argv[3] ? path.resolve(process.argv[3]) : null
 if (SHOTS) mkdirSync(SHOTS, { recursive: true })
-const CHROME = process.env.CHROME || 'C:/Program Files/Google/Chrome/Application/chrome.exe'
+// Chrome where each OS puts it (or CHROME=/path/to/chrome)
+const CHROME = process.env.CHROME || { win32: 'C:/Program Files/Google/Chrome/Application/chrome.exe', darwin: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' }[process.platform] || '/usr/bin/google-chrome'
 
-const W = mkdtempSync(path.join(tmpdir(), 'gitx-servers-ui-'))
+const HERE = path.dirname(new URL(import.meta.url).pathname.replace(/^\/(\w:)/, '$1'))
+const W = mkdtempSync(path.join(process.platform === 'win32' ? HERE : tmpdir(), process.platform === 'win32' ? '.tmp-servers-ui-' : 'gitx-servers-ui-'))
 process.env.GIT_CONFIG_GLOBAL = path.join(W, 'global.gitconfig') // never the person's real config
 writeFileSync(process.env.GIT_CONFIG_GLOBAL, '[user]\n\tname = Satang B.\n\temail = satang@acme.example\n[init]\n\tdefaultBranch = main\n')
 process.env.GIT_CONFIG_NOSYSTEM = '1'
@@ -62,39 +59,22 @@ try {
   project(homes['office-server'], 'work/acme-web/node_modules/left-pad', [['index.js', 'dependency', 'x']]) // skipped
   project(homes['build-box'], 'ci/runner', [['run.sh', 'ci: build and test on push', 'Niran P.']])
 
-  const fakeSsh = path.join(W, 'fake-ssh')
-  writeFileSync(
-    fakeSsh,
-    `#!/bin/sh
-if [ "$1" = -G ]; then
-  case "$2" in
-    office-server) printf 'hostname 10.0.0.5\\nport 22\\nuser satang\\n' ;;
-    build-box) printf 'hostname 10.0.0.9\\nport 22\\nuser ci\\n' ;;
-    gpu-lab) printf 'hostname 10.0.4.17\\nport 22\\nuser satang\\n' ;;
-    *) printf 'hostname %s\\nport 22\\nuser me\\n' "$2" ;;
-  esac
-  exit 0
-fi
-while [ $# -gt 0 ]; do case "$1" in -o) shift 2;; --) shift;; -*) shift;; *) break;; esac; done
-dest=$1; shift
-case "$dest" in
-  office-server) export HOME='${homes['office-server']}' ;;
-  build-box) export HOME='${homes['build-box']}' ;;
-  *) echo "$dest: Permission denied (publickey)." >&2; exit 255 ;;
-esac
-exec sh -c "$*"
-`,
-    { mode: 0o755 }
-  )
-  process.env.GIT_CONTROL_SSH = fakeSsh
+  // the stand-in ssh (a Node script, so this runs on Windows, macOS and Linux): each server its own
+  // home; gpu-lab refuses the key
+  process.env.FAKE_SSH_G = JSON.stringify({
+    'office-server': 'hostname 10.0.0.5\nport 22\nuser satang\n',
+    'build-box': 'hostname 10.0.0.9\nport 22\nuser ci\n',
+    'gpu-lab': 'hostname 10.0.4.17\nport 22\nuser satang\n'
+  })
+  process.env.FAKE_SSH_HOMES = JSON.stringify({ 'office-server': homes['office-server'], 'build-box': homes['build-box'] })
+  process.env.GIT_CONTROL_SSH = path.join(HERE, 'fake-ssh.mjs')
   process.env.GIT_CONTROL_SSH_NO_MUX = '1'
   const sshConfig = path.join(W, 'ssh_config')
   writeFileSync(sshConfig, 'Host office-server\n  HostName 10.0.0.5\nHost build-box\n  HostName 10.0.0.9\n  User ci\nHost gpu-lab\n  HostName 10.0.4.17\n')
   process.env.GIT_CONTROL_SSH_CONFIG = sshConfig
   // Orca's SSH hosts: office-server and gpu-lab (build-box is added in the panel)
-  const fakeOrca = path.join(W, 'fake-orca')
-  writeFileSync(fakeOrca, `#!/bin/sh\n[ "$1 $2" = "host list" ] || exit 1\necho '{"ok":true,"result":{"hosts":[{"kind":"local","name":"this machine","id":"local"},{"kind":"ssh","name":"office-server","id":"tgt-office"},{"kind":"ssh","name":"gpu-lab","id":"tgt-gpu"}]}}'\n`, { mode: 0o755 })
-  process.env.GIT_CONTROL_ORCA_BIN = fakeOrca
+  process.env.FAKE_ORCA_HOSTS = JSON.stringify([{ kind: 'local', name: 'this machine', id: 'local' }, { kind: 'ssh', name: 'office-server', id: 'tgt-office' }, { kind: 'ssh', name: 'gpu-lab', id: 'tgt-gpu' }])
+  process.env.GIT_CONTROL_ORCA_BIN = path.join(HERE, 'fake-orca.mjs')
 
   // ---------- a local repository, open in Orca ----------
   const local = project(path.join(W, 'code'), 'acme-web', [

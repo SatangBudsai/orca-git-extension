@@ -11,7 +11,8 @@ import puppeteer from 'puppeteer-core'
 const PLUGIN = process.argv[2]
 const SHOTS = process.argv[3]
 mkdirSync(SHOTS, { recursive: true })
-const CHROME = process.env.CHROME || 'C:/Program Files/Google/Chrome/Application/chrome.exe'
+// Chrome where each OS puts it (or CHROME=/path/to/chrome)
+const CHROME = process.env.CHROME || { win32: 'C:/Program Files/Google/Chrome/Application/chrome.exe', darwin: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' }[process.platform] || '/usr/bin/google-chrome'
 
 const root = mkdtempSync(path.join(tmpdir(), 'gitx-side-'))
 process.env.GIT_CONFIG_GLOBAL = path.join(root, 'global.gitconfig') // never the person's real config

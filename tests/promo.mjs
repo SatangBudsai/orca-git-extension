@@ -9,7 +9,8 @@ const PLUGIN = process.argv[2]
 const SRC = path.join(PLUGIN, 'assets/screenshots')
 const OUT = path.join(PLUGIN, 'assets/promo')
 mkdirSync(OUT, { recursive: true })
-const CHROME = process.env.CHROME || 'C:/Program Files/Google/Chrome/Application/chrome.exe'
+// Chrome where each OS puts it (or CHROME=/path/to/chrome)
+const CHROME = process.env.CHROME || { win32: 'C:/Program Files/Google/Chrome/Application/chrome.exe', darwin: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' }[process.platform] || '/usr/bin/google-chrome'
 
 const slides = [
   { file: 'graph', cover: true, eyebrow: 'Commit graph', title: 'See every branch at a glance', body: 'Each branch keeps its own colour. Click a commit and its details open beside the graph; ↑ ↓ step through them.', points: ['Search messages, files, authors and tags as you type', 'Right-click any commit for checkout, merge, rebase or revert'] },
