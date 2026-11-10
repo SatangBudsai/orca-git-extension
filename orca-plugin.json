@@ -4,7 +4,7 @@
   "execution": "trusted-worker",
   "id": "git-control",
   "name": "Git Control",
-  "version": "0.9.1",
+  "version": "0.9.2",
   "description": "A Git client inside Orca, with AI: commit graph, commits, merges with a side-by-side conflict resolver, interactive rebase, stashes and worktrees; GitHub and GitLab merge requests (approve, merge in the background, AI review before you open one) and every branch's pipelines; Repo Overview for many repos at once (grouped like Orca, fetch, pull, push and tag them together). Works on projects on your SSH servers too. Uses your existing Git login. In a full tab and the right sidebar.",
   "license": "MIT",
   "author": {
