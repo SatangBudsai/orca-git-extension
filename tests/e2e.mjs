@@ -12,7 +12,8 @@ import puppeteer from 'puppeteer-core'
 const PLUGIN = process.argv[2]
 const SHOTS = process.argv[3]
 mkdirSync(SHOTS, { recursive: true })
-const CHROME = process.env.CHROME || 'C:/Program Files/Google/Chrome/Application/chrome.exe'
+// Chrome where each OS puts it (or CHROME=/path/to/chrome)
+const CHROME = process.env.CHROME || { win32: 'C:/Program Files/Google/Chrome/Application/chrome.exe', darwin: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' }[process.platform] || '/usr/bin/google-chrome'
 
 // ---------- fixture: a repo with a remote, branches, and a diverged sandbox ----------
 const root = mkdtempSync(path.join(tmpdir(), 'gitx-e2e-'))
@@ -809,12 +810,14 @@ await step('Inbox (GitLab, saved Git login): to review, assigned, opened by me, 
   await seg2('All', 'MR repo')
   if (await exists('.reviews .segmented button.on[title*="Every repository"]')) throw new Error('All offers All repos')
   await seg2('Open', 'MR review')
-  // follows the repository's remote: another project's MR shows only with "All repos"
-  if (await page.$eval('.reviews', (r) => r.textContent.includes('MR other repo'))) throw new Error('another repo listed by default')
-  await clickText('.reviews .segmented button', 'All repos')
-  await until(() => page.$eval('.reviews', (r) => r.textContent.includes('MR other repo')), 'All repos lists the other project', 20000)
-  await clickText('.reviews .segmented button', 'app')
-  await until(() => page.$eval('.reviews', (r) => !r.textContent.includes('MR other repo')), 'back to this repo')
+  // every repository, always, each under its own heading (no "this repo / All repos" switch any more)
+  if (await exists('.reviews .segmented button[title*="Every repository on GitHub"]')) throw new Error('the repo switch is still there')
+  const heads = await page.$$eval('.reviews .rv-repo-head .rv-repo-name', (h) => h.map((x) => x.textContent))
+  if (!heads.includes('app')) throw new Error('no heading for app: ' + heads.join(', '))
+  // searching lists them flat, each with its repository
+  await page.$eval('.rv-search', (i) => { i.value = 'MR assigned'; i.dispatchEvent(new Event('input', { bubbles: true })) })
+  await until(() => page.$$eval('.reviews .review-row .rv-repo-chip', (c) => c.some((x) => x.textContent === 'app')).catch(() => false), 'a search shows each row with its repo')
+  await page.$eval('.rv-search', (i) => { i.value = ''; i.dispatchEvent(new Event('input', { bubbles: true })) })
   await shot('11-inbox')
   // a row opens the detail page: description, people, approvals, activity; then decide inside
   await clickText('.review-row', 'MR review')
@@ -849,7 +852,7 @@ await step('Inbox (GitLab, saved Git login): to review, assigned, opened by me, 
   if (!(await page.$$eval('.ai-review-dialog .btn', (b) => b.some((x) => x.textContent.includes('Start review'))))) throw new Error('no Start review button')
   await clickText('.ai-review-dialog .btn', 'Close')
   // a press outside the page closes it, like a modal
-  await page.mouse.click(320, 700)
+  await page.mouse.click(320, 890) // an empty spot below the list
   await until(() => page.$('.mr-detail').then((x) => !x), 'detail closes on a click outside')
 })
 await step('Review & MR list: approve leaves To review, multi-select merge, real data after', async () => {
@@ -1477,6 +1480,18 @@ await step('Repos overview: every repo at once, filters, Fetch all, Pull all onl
   if (run(path.join(multi, 'web'), 'status', '--porcelain') === '') throw new Error("web lost its uncommitted change while switching")
   // grouped like Orca's sidebar
   await until(() => page.$$eval('.rov-grp-name', (g) => g.map((x) => x.textContent).join('|')).then((t) => t === 'Shop|Not in a project group').catch(() => false), 'grouped: Shop, then the rest', 20000)
+  // narrow (Orca's side panels open): nothing in a row overlaps its buttons
+  for (const w of [1100, 820]) {
+    await page.setViewport({ width: w, height: 900 })
+    await new Promise((r) => setTimeout(r, 300))
+    const clash = await page.evaluate(() => [...document.querySelectorAll('.rov-row')].some((row) => {
+      const a = row.querySelector('.rov-actions')?.getBoundingClientRect()
+      return [...row.querySelectorAll('.rov-cells > *')].some((c) => { const b = c.getBoundingClientRect(); return b.width && a && b.right > a.left + 1 && b.bottom > a.top + 1 && b.top < a.bottom - 1 })
+    }))
+    await shot('repos-overview-' + w)
+    if (clash) throw new Error(`at ${w}px a row overlaps its buttons`)
+  }
+  await page.setViewport({ width: 1500, height: 900 })
   // scrolled down, the bar with the selection and its commands stays in view
   await page.setViewport({ width: 1500, height: 300 })
   await page.evaluate(() => (document.querySelector('#main').scrollTop = 10000))
@@ -1490,10 +1505,10 @@ await step('Repos overview: every repo at once, filters, Fetch all, Pull all onl
   await page.evaluate(() => document.querySelector('.rov-selbar .ghost')?.click()) // clear the selection first
   for (const n of ['api', 'docs']) await page.evaluate(`${rowOf(n)}.querySelector('.rov-pick').click()`)
   await clickSel('.rov-tag-btn')
-  await until(() => exists('.tag-many-dialog .tm-sentence select:not(:disabled)'), 'tag window')
+  await until(() => exists('.tag-many-dialog .tm-branch-in:not(:disabled)'), 'tag window')
   // nothing to type: v* (no tags yet) on the branch they are on (main), next version v1.0.0 each
   await until(() => page.$$eval('.tag-many-dialog .tm-row:not(.tm-head) .tm-name', (i) => i.length === 2 && i.every((x) => x.value === 'v1.0.0')).catch(() => false), 'each repo: next version v1.0.0', 20000)
-  const sentence = await page.$eval('.tag-many-dialog .tm-sentence', (x) => [...x.querySelectorAll('select')].map((s) => s.value).join(' '))
+  const sentence = await page.$eval('.tag-many-dialog .tm-sentence', (x) => `${x.querySelector('select').value} ${x.querySelector('.tm-branch-in').value}`)
   if (sentence !== 'v* main') throw new Error('sentence: ' + sentence)
   await shot('tag-many')
   await page.evaluate(() => document.querySelector('.tag-many-dialog .buttons .btn.primary').click())

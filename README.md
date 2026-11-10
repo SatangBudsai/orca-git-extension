@@ -191,7 +191,9 @@ node tools/build.mjs         # after editing panel/: builds panel/graph.html (ta
 ```
 
 Tests run against throwaway repositories and a fake GitHub/GitLab API, never your accounts or config
-(`cd tests && npm install` first; they need Google Chrome):
+(`cd tests && npm install` first; they need Google Chrome, found where Windows, macOS or Linux put it, or set
+`CHROME=/path/to/chrome`). They run on Windows, macOS and Linux: the stand-ins for `ssh`, `orca` and the AI CLIs are Node
+scripts, and on Windows the SSH tests use the `sh` that comes with Git (symlink checks are skipped without Developer Mode):
 
 ```sh
 node e2e.mjs <plugin folder> <shots folder>       # the full tab, clicked through like a person
@@ -204,6 +206,7 @@ node github-ratelimit.mjs                         # GitHub searches shared, paus
 node pipelines-perf.mjs --check                   # Pipelines tab load time against a slow fake GitLab
 node tag-many.mjs                                 # tag several repos: newest tag, next version, already tagged
 node ai-review-local.mjs                          # Review with AI before a merge request or a commit
+node notify.mjs                                   # notifications: new MR, pipeline passed / failed, merged
 node remote-ops.mjs                               # a repository on an SSH host, through a stand-in ssh
 node servers-ui.mjs <plugin folder> [shots folder] # servers in the panel: menu, Servers page, header badge, overview
 node screenshots.mjs <plugin folder> <out folder> # the screenshots above, on a made-up project

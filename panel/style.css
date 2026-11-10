@@ -1951,3 +1951,36 @@ body.compact .pc-ref, body.compact .pc-stages, body.compact .pc-by, .side-panel 
 .host-badge > span { white-space: nowrap; }
 .repo-btn .host-badge svg { flex: none; color: inherit; }
 #repoName { min-width: 0; }
+
+/* Repo Overview rows follow the room the list has (not the window): Orca's side panels make it
+   narrow. Narrow: the details go to a second line under the name; narrower: fewer columns. */
+.rov-list { container-type: inline-size; }
+@container (max-width: 1180px) {
+  .rov-row { grid-template-columns: 16px 10px minmax(0, 1fr) auto; row-gap: 6px; }
+  .rov-cells { grid-column: 3 / 5; grid-row: 2; grid-template-columns: var(--rov-bw, 220px) 70px 110px 130px auto minmax(0, 1fr); }
+  .rov-actions { grid-row: 1; grid-column: 4; width: auto; }
+  .rov-err { grid-column: 3 / 5; grid-row: 2; }
+}
+@container (max-width: 760px) {
+  .rov-cells { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
+  .rov-cells > .rov-branch { max-width: 100%; }
+  .rov-cells > span:empty, .rov-ci:empty, .rov-rv:empty { display: none; }
+}
+/* MR / PR: grouped like Orca's sidebar, Project Group › repository */
+.rv-repo-head { display: flex; align-items: center; gap: 8px; width: 100%; padding: 12px 16px 6px; border: 0; border-bottom: 1px solid var(--line); background: var(--bg); color: var(--t1); font: inherit; font-size: 12.5px; font-weight: 650; text-align: left; cursor: pointer; }
+.rv-repo-head:hover { background: var(--card); }
+.rv-repo-head svg { color: var(--t3); flex: none; }
+.rv-repo-grp { color: var(--t3); font-weight: 500; }
+.rv-repo-you { margin-left: auto; color: var(--mod); font-weight: 500; font-size: 11.5px; }
+.rv-repo-head.shut { border-bottom-color: var(--line); color: var(--t2); }
+.pill.rv-repo-chip { color: var(--fg); background: color-mix(in srgb, var(--ren) 14%, transparent); border: 1px solid color-mix(in srgb, var(--ren) 35%, transparent); font-weight: 600; white-space: nowrap; flex: none; max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
+.pill.rv-canmerge { display: inline-flex; align-items: center; gap: 4px; color: var(--add); background: color-mix(in srgb, var(--add) 12%, transparent); white-space: nowrap; flex: none; }
+/* tag window: branch combo boxes (type to search), sized to stay on one line */
+.tm-sentence .combo { width: 280px; flex: none; }
+.tm-sentence .combo > input { height: 32px; font-weight: 600; }
+.tm-branch .combo { width: 100%; max-width: 280px; }
+.tm-branch .combo > input { height: 28px; font-size: 12px; }
+.tm-warn { color: var(--mod); font-size: 11.5px; }
+.tm-fetching { display: flex; align-items: center; gap: 6px; }
+.tm-fetch-note { font-size: 12px; }
+.tm-branch .combo > input.tm-row-branch { width: 100%; max-width: none; }

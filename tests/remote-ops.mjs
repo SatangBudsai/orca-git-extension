@@ -8,56 +8,22 @@ import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
-// the stand-in ssh below is a shell script, so this suite needs a POSIX shell
-if (process.platform === 'win32') {
-  console.log('remote-ops: skipped on Windows (the stand-in ssh is a shell script)')
-  process.exit(0)
-}
-
-const ROOT = path.dirname(fileURLToPath(import.meta.url))
-const W = fs.mkdtempSync(path.join(os.tmpdir(), 'gitx-remote-'))
+const ROOT = path.dirname(fileURLToPath(import.meta.url)) // works on Windows too
+// Windows: not under Temp, which Git's sh shows as /tmp (git itself as C:/…/Temp): the paths would differ
+const W = fs.mkdtempSync(path.join(process.platform === 'win32' ? ROOT : os.tmpdir(), process.platform === 'win32' ? '.tmp-remote-' : 'gitx-remote-'))
 const gcfg = path.join(W, 'global.gitconfig')
 fs.writeFileSync(gcfg, `[user]\n\tname = T\n\temail = t@e\n[init]\n\tdefaultBranch = main\n`)
 process.env.GIT_CONFIG_GLOBAL = gcfg
 process.env.GIT_CONFIG_NOSYSTEM = '1'
 
-// the stand-in ssh: skips options, refuses "down-host", logs the destination, runs the command line
-const fakeSsh = path.join(W, 'fake-ssh')
+// the stand-ins for ssh and Orca's CLI: Node scripts, so the test runs on Windows, macOS and Linux
 const sshLog = path.join(W, 'ssh.log')
-fs.writeFileSync(
-  fakeSsh,
-  `#!/bin/sh
-# ssh -G: where a name goes (office-alias is the ~/.ssh/config alias of 127.0.0.9)
-if [ "$1" = -G ]; then
-  case "$2" in
-    office-alias) printf 'hostname 127.0.0.9\nport 22\nuser frank\n' ;;
-    wrong-port) printf 'hostname 127.0.0.9\nport 2222\nuser frank\n' ;;
-    *) printf 'hostname %s\nport 22\nuser me\n' "$2" ;;
-  esac
-  exit 0
-fi
-while [ $# -gt 0 ]; do case "$1" in -o) shift 2;; --) shift;; -*) shift;; *) break;; esac; done
-dest=$1; shift
-export HOME='${path.join(W, 'home')}'
-echo "$dest" >> '${sshLog}'
-[ "$dest" = down-host ] && { echo "ssh: connect to host down-host port 22: Connection refused" >&2; exit 255; }
-exec "\${FAKE_LOGIN_SHELL:-sh}" -c "$*"
-`,
-  { mode: 0o755 }
-)
-process.env.GIT_CONTROL_SSH = fakeSsh
+fs.writeFileSync(sshLog, '')
+process.env.FAKE_SSH_LOG = sshLog
+process.env.FAKE_SSH_HOME = path.join(W, 'home')
+process.env.GIT_CONTROL_SSH = path.join(ROOT, 'fake-ssh.mjs')
 process.env.GIT_CONTROL_SSH_NO_MUX = '1'
-// Orca's CLI: its SSH hosts (one of them Orca's own VM, which is not a server of the person's)
-const fakeOrca = path.join(W, 'fake-orca')
-fs.writeFileSync(
-  fakeOrca,
-  `#!/bin/sh
-[ "$1 $2" = "host list" ] || exit 1
-echo '{"ok":true,"result":{"hosts":[{"kind":"local","name":"this machine","id":"local"},{"kind":"ssh","name":"office-orca","id":"tgt-9"},{"kind":"ssh","name":"127.0.0.9","id":"tgt-ip"},{"kind":"ssh","name":"vm","id":"runtime-ssh-1"}]}}'
-`,
-  { mode: 0o755 }
-)
-process.env.GIT_CONTROL_ORCA_BIN = fakeOrca
+process.env.GIT_CONTROL_ORCA_BIN = path.join(ROOT, 'fake-orca.mjs')
 // the server's home folder, with a project 3 levels down
 fs.mkdirSync(path.join(W, 'home', 'github', 'team', 'proj'), { recursive: true })
 execFileSync('git', ['init', '-q', path.join(W, 'home', 'github', 'team', 'proj')])
@@ -67,6 +33,16 @@ fs.writeFileSync(path.join(W, 'conf.d', 'office'), 'Host wrong-port\n  HostName 
 fs.writeFileSync(path.join(W, 'ssh_config'), `Host *.example other-*\n  User x\n# comment\nInclude ${path.join(W, 'conf.d')}/*\n`)
 process.env.GIT_CONTROL_SSH_CONFIG = path.join(W, 'ssh_config')
 
+// symlinks: Windows makes them only with Developer Mode or admin rights; those checks are skipped then
+const canSymlink = (() => {
+  try {
+    fs.symlinkSync(W, path.join(W, '.link-probe'))
+    fs.rmSync(path.join(W, '.link-probe'))
+    return true
+  } catch {
+    return false
+  }
+})()
 const g = (cwd, ...a) => execFileSync('git', a, { cwd, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }).trim()
 let fails = 0
 const ok = (c, n, x = '') => (c || fails++, console.log(`${c ? 'PASS' : 'FAIL'} ${n}${!c && x ? ' :: ' + x : ''}`))
@@ -80,9 +56,12 @@ g(repo, 'init')
 commit('a.txt', '1\n', 'one')
 commit('a.txt', '2\n', 'two')
 
+// a server speaks POSIX paths: on Windows the test's "server" folders are /c/Users/… (Git's sh reads those)
+const sp = (p) => (process.platform === 'win32' ? '/' + p[0].toLowerCase() + p.slice(2).replace(/\\/g, '/') : p)
 const HOST = 'tgt-1' // the Orca SSH target id
-const loc = (p) => `ssh://${HOST}${p}`
+const loc = (p) => `ssh://${HOST}${sp(p)}`
 const R = loc(repo)
+const QNAME = process.platform === 'win32' ? "new file 'q' & co.txt" : 'new file "q".txt' // needs quoting either way
 
 const opened = []
 const storage = new Map()
@@ -97,7 +76,7 @@ const orca = {
       if (m === 'workspace.list')
         return {
           workspaces: [
-            { id: 'ws-remote', kind: 'folder', name: 'remote', path: repo, branch: 'main', hostId: `ssh:${encodeURIComponent(HOST)}` },
+            { id: 'ws-remote', kind: 'folder', name: 'remote', path: sp(repo), branch: 'main', hostId: `ssh:${encodeURIComponent(HOST)}` },
             { id: 'ws-runtime', kind: 'folder', name: 'paired', path: '/elsewhere', branch: null, hostId: 'runtime:abc' }
           ],
           truncated: false
@@ -124,13 +103,13 @@ try {
   ok(dests().every((d) => d === HOST), 'ssh reaches the host by the name Orca shows', dests().join(','))
 
   // status
-  write('new file "q".txt', 'x\n')
+  write(QNAME, 'x\n')
   const st = await op('status')
   ok(st.toplevel === R, 'status toplevel is a locator', st.toplevel)
-  ok(st.branch === 'main' && st.files.some((f) => f.path === 'new file "q".txt' && f.untracked), 'status over ssh', JSON.stringify(st.files))
+  ok(st.branch === 'main' && st.files.some((f) => f.path === QNAME && f.untracked), 'status over ssh', JSON.stringify(st.files))
 
   // stage + commit with an awkward message
-  await op('stage', { files: ['new file "q".txt'] })
+  await op('stage', { files: [QNAME] })
   await op('commit', { message: `it's "quoted" $HOME \`x\`` }).catch(async () => g(repo, 'commit', '-m', `it's "quoted" $HOME \`x\``))
   ok(g(repo, 'log', '-1', '--format=%s') === `it's "quoted" $HOME \`x\``, 'commit message passes the remote shell untouched', g(repo, 'log', '-1', '--format=%s'))
 
@@ -149,10 +128,20 @@ try {
   const outside = await op('readWorkFile', { file: '../outside.txt' }).then(() => null, (e) => e)
   ok(outside && /outside the repository/.test(outside.message), 'outside path rejected on the host', outside?.message)
   fs.writeFileSync(path.join(W, 'secret.txt'), 's')
-  fs.symlinkSync(path.join(W, 'secret.txt'), path.join(repo, 'link.txt'))
-  const viaLink = await op('readWorkFile', { file: 'link.txt' }).then(() => null, (e) => e)
-  ok(viaLink && /outside the repository/.test(viaLink.message), 'symlink escape rejected on the host', viaLink?.message)
-  fs.rmSync(path.join(repo, 'link.txt'))
+  // Windows makes symlinks only with Developer Mode or admin rights: the check is skipped there then
+  let linked = true
+  try {
+    fs.symlinkSync(path.join(W, 'secret.txt'), path.join(repo, 'link.txt'))
+  } catch (e) {
+    if (e.code !== 'EPERM') throw e
+    linked = false
+    console.log('SKIP symlink escape rejected on the host (symlinks need Developer Mode on Windows)')
+  }
+  if (linked) {
+    const viaLink = await op('readWorkFile', { file: 'link.txt' }).then(() => null, (e) => e)
+    ok(viaLink && /outside the repository/.test(viaLink.message), 'symlink escape rejected on the host', viaLink?.message)
+    fs.rmSync(path.join(repo, 'link.txt'))
+  }
   g(repo, 'commit', '-qm', 'b')
 
   // a merge conflict: state, sides, conflict text through a temp folder on the host
@@ -202,14 +191,15 @@ try {
     ok(ignErr && /symbolic link/.test(ignErr.message) && fs.readFileSync(victim, 'utf8') === 'keep\n', `.gitignore symlink not written through (${where})`, ignErr?.message)
     for (const f of ['Git.control', '.gitignore']) fs.rmSync(path.join(dir, f), { force: true })
   }
-  await linkGuard(repo, R, 'on the host')
+  if (canSymlink) await linkGuard(repo, R, 'on the host')
+  else console.log('SKIP Git.control / .gitignore symlink checks (symlinks need Developer Mode on Windows)')
 
   // repo.check gives a locator back
   const chk = await handlers['repo.check']({ path: R })
   ok(chk.ok && chk.toplevel === R, 'repo.check answers with a locator', JSON.stringify(chk))
 
   // an unreachable host: a clear error, and quickly the second time
-  const down = `ssh://down-host${repo}`
+  const down = `ssh://down-host${sp(repo)}`
   const e1 = await op('status', {}, down).then(() => null, (e) => e)
   ok(e1 && /Could not reach down-host over SSH/.test(e1.message) && /To fix it:\n1\. .*ssh -o BatchMode=yes down-host/.test(e1.message), 'unreachable host explains, step by step, what to do', e1?.message)
   const before = dests().filter((d) => d === 'down-host').length
@@ -218,15 +208,15 @@ try {
 
   // a host Orca shows by its address reaches it through the ~/.ssh/config alias for that address
   const n0 = dests().length
-  const byIp = await op('status', {}, `ssh://127.0.0.9${repo}`)
+  const byIp = await op('status', {}, `ssh://127.0.0.9${sp(repo)}`)
   const used = dests().slice(n0).filter((d) => d !== '127.0.0.9')
-  ok(byIp.toplevel === `ssh://127.0.0.9${repo}` && used.length && used.every((d) => d === 'office-alias'), 'address resolved to its ~/.ssh/config alias (Include, port checked)', dests().slice(n0).join(','))
+  ok(byIp.toplevel === `ssh://127.0.0.9${sp(repo)}` && used.length && used.every((d) => d === 'office-alias'), 'address resolved to its ~/.ssh/config alias (Include, port checked)', dests().slice(n0).join(','))
 
   // Orca's SSH hosts are servers without being added: their home folder is searched
   const auto = await handlers['servers.repos']({ refresh: true })
   const orcaSrv = auto.servers.find((x) => x.id === 'tgt-9')
   ok(orcaSrv && orcaSrv.source === 'orca' && orcaSrv.label === 'office-orca' && !auto.servers.some((x) => x.id === 'runtime-ssh-1'), "Orca's SSH hosts listed as servers (its own VMs not)", JSON.stringify(auto.servers))
-  ok(auto.repos.some((r) => r.path === `ssh://tgt-9${path.join(W, 'home', 'github', 'team', 'proj')}` && r.hostLabel === 'office-orca'), 'their projects found under ~ without any setup', JSON.stringify(auto.repos.map((r) => r.path)))
+  ok(auto.repos.some((r) => r.path === `ssh://tgt-9${sp(path.join(W, 'home', 'github', 'team', 'proj'))}` && r.hostLabel === 'office-orca'), 'their projects found under ~ without any setup', JSON.stringify(auto.repos.map((r) => r.path)))
   const noRemove = await handlers['servers.remove']({ id: 'tgt-9' }).then(() => null, (e) => e)
   ok(noRemove && /remove it in Orca/.test(noRemove.message) && (await handlers['servers.list']({})).find((x) => x.id === 'tgt-9')?.repoCount === 1, 'an Orca host cannot be removed here, only hidden', noRemove?.message)
   const byAddr = auto.servers.find((x) => x.id === 'tgt-ip')
@@ -241,26 +231,26 @@ try {
   g(path.join(W, 'deps', 'node_modules', 'pkg'), 'init', '-q') // inside node_modules: skipped
   fs.mkdirSync(path.join(W, '.hidden', 'r'), { recursive: true })
   g(path.join(W, '.hidden', 'r'), 'init', '-q') // in a hidden folder: skipped
-  const added = await handlers['servers.add']({ dest: 'office-alias', roots: W })
+  const added = await handlers['servers.add']({ dest: 'office-alias', roots: sp(W) }) // a folder on the server: POSIX
   ok(added.id === 'office-alias' && !added.error && added.repoCount === 2, 'server added and searched', JSON.stringify(added))
   const choices = await handlers['servers.sshAliases']({})
   const ch = Object.fromEntries(choices.map((c) => [c.name, c]))
   ok(ch['office-alias']?.detail === 'frank@127.0.0.9' && ch['office-alias'].added && ch['wrong-port']?.detail === 'frank@127.0.0.9:2222' && !ch['wrong-port'].added, 'add-server suggestions show where each host connects and which are added', JSON.stringify(choices))
   const found = await handlers['servers.repos']({})
   const paths = found.repos.map((r) => r.path).sort()
-  const want = [repo, path.join(W, 'wt two')].map((p) => `ssh://office-alias${p}`).sort()
+  const want = [repo, path.join(W, 'wt two')].map((p) => `ssh://office-alias${sp(p)}`).sort()
   ok(JSON.stringify(paths) === JSON.stringify(want), 'projects found on the server by locator (dependencies and hidden folders skipped)', JSON.stringify(paths))
   ok(found.repos.every((r) => r.hostLabel === 'office-alias' && r.repoName), 'server projects carry the server name')
   const srv = found.servers.find((x) => x.id === 'office-alias')
-  ok(srv && srv.source === 'manual' && srv.repoCount === 2 && !srv.error && srv.roots[0] === W, 'server listed with its folders and count', JSON.stringify(srv))
-  const viaServer = await op('status', {}, found.repos.find((r) => r.path.endsWith(repo)).path)
+  ok(srv && srv.source === 'manual' && srv.repoCount === 2 && !srv.error && srv.roots[0] === sp(W), 'server listed with its folders and count', JSON.stringify(srv))
+  const viaServer = await op('status', {}, found.repos.find((r) => r.path.endsWith(sp(repo))).path)
   ok(viaServer.branch === 'main', 'a found project opens like any repository')
 
   // Repo Overview: the servers' projects too, under their server, each read where it is
   const ov = await handlers['repos.overview']({})
-  const sr = ov.repos.find((r) => r.path === `ssh://office-alias${repo}`)
+  const sr = ov.repos.find((r) => r.path === `ssh://office-alias${sp(repo)}`)
   ok(sr && sr.host === 'office-alias' && sr.source === 'server' && sr.group?.server && sr.group.name === 'office-alias' && sr.branch === 'main' && !sr.error && ov.servers, "Repo Overview lists a server's projects, grouped under the server", JSON.stringify(sr))
-  const twin = ov.repos.filter((r) => r.path.toLowerCase() === `ssh://office-alias${repo}`.toLowerCase())
+  const twin = ov.repos.filter((r) => r.path.toLowerCase() === `ssh://office-alias${sp(repo)}`.toLowerCase())
   ok(twin.length === 1, 'listed once', JSON.stringify(twin.map((r) => r.path)))
   // tags on a server repo and a local one in one go
   const localTag = path.join(W, '.local-tag') // hidden: not one of the server's projects
@@ -269,7 +259,7 @@ try {
   for (const d of [localTag, repo]) g(d, 'tag', 'v1.0.0', 'HEAD~0')
   g(repo, 'commit', '-q', '--allow-empty', '-m', 'after tag')
   g(localTag, 'commit', '-q', '--allow-empty', '-m', 'after tag')
-  const tagRepos = [`ssh://office-alias${repo}`, localTag]
+  const tagRepos = [`ssh://office-alias${sp(repo)}`, localTag]
   const pats = await handlers['repos.tagPatterns']({ repos: tagRepos })
   ok(pats[0]?.pattern === 'v*' && pats[0].repos === 2, 'tag patterns read on both machines', JSON.stringify(pats))
   const plan = await handlers['repos.tagPlan']({ repos: tagRepos, pattern: 'v*' })
@@ -281,9 +271,9 @@ try {
   await handlers['servers.update']({ id: 'office-alias', hidden: false })
   const badRoots = await handlers['servers.update']({ id: 'office-alias', roots: 'relative/dir' }).then(() => null, (e) => e)
   ok(badRoots && /start it with \/ or ~/.test(badRoots.message), 'folders must be absolute or under ~', badRoots?.message)
-  const two = (await handlers['servers.update']({ id: 'office-alias', roots: `${W}; ~/elsewhere` })).find((x) => x.id === 'office-alias')
+  const two = (await handlers['servers.update']({ id: 'office-alias', roots: `${sp(W)}; ~/elsewhere` })).find((x) => x.id === 'office-alias')
   ok(two?.roots.length === 2 && two.roots[1] === '~/elsewhere', 'folders separated with ; as in Scan folders', JSON.stringify(two?.roots))
-  await handlers['servers.update']({ id: 'office-alias', roots: W })
+  await handlers['servers.update']({ id: 'office-alias', roots: sp(W) })
   await handlers['servers.repos']({ refresh: true })
   const dup = await handlers['servers.add']({ dest: '-oProxyCommand=x' }).then(() => null, (e) => e)
   ok(dup && /Not a usable ssh destination/.test(dup.message), 'option-like destination refused', dup?.message)
@@ -302,9 +292,9 @@ try {
   g(W, 'init', '-q', local)
   const n = dests().length
   const lst = await op('status', {}, local)
-  ok(lst.toplevel === local && dests().length === n, 'local repository untouched by ssh', lst.toplevel)
+  ok(path.resolve(lst.toplevel) === path.resolve(local) && dests().length === n, 'local repository untouched by ssh', lst.toplevel)
   g(local, 'commit', '-q', '--allow-empty', '-m', 'init')
-  await linkGuard(local, local, 'on this computer')
+  if (canSymlink) await linkGuard(local, local, 'on this computer')
 } catch (e) {
   fails++
   console.log('FAIL (crash)', e.stack)
