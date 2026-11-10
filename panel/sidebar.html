@@ -200,13 +200,12 @@ header { display: flex; align-items: center; gap: 12px; padding: 12px 16px 8px; 
 .toolbar { display: flex; align-items: center; gap: 4px; order: 3; margin-left: auto; }
 .toolbar .icon-btn { height: 30px; padding: 0 8px; gap: 8px; background: var(--card); border: 1px solid var(--line); color: var(--t1); }
 .toolbar .icon-btn:hover:not(:disabled) { background: var(--card-hi); border-color: var(--line-hi); }
-/* language: a globe button like the others; the real <select> covers it invisibly and opens the list */
-.lang-pick { position: relative; display: inline-flex; align-items: center; cursor: pointer; }
+/* language: a globe button like the others; it opens the app's own menu */
+.lang-pick { gap: 5px; }
+.lang-pick > span:last-child { color: var(--t3); }
+.menu button.lang-on { color: var(--ren); font-weight: 600; }
 .lang-pick .lang-code { font-size: 11px; font-weight: 600; color: var(--t2); letter-spacing: .02em; }
 .lang-pick:hover .lang-code { color: var(--t1); }
-.lang-pick:focus-within { border-color: var(--ren); }
-.lang-select { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; border: 0; font-size: 13px; }
-.lang-select option { background: var(--card); color: var(--t1); }
 .tb-label { font-size: 12px; }
 #branchLine { flex: 1; min-width: 0; display: flex; align-items: center; gap: 12px; }
 .branch-chip { display: inline-flex; align-items: center; gap: 8px; min-width: 0; max-width: 340px; height: 28px; padding: 0 12px; border-radius: 999px; border: 1px solid var(--line); background: var(--card); color: var(--t1); cursor: pointer; font-size: 12px; }
@@ -2090,20 +2089,16 @@ function t(s, vars) {
 // The language button at the top right: a globe and the language's code. The choice belongs to Git Control
 // (the plugin's own storage, and kept here for the next start), not to Orca's settings.
 function langPicker() {
-  const sel = h(
-    'select',
-    {
-      class: 'lang-select',
-      'aria-label': t('Language'),
-      onChange: () => {
-        const v = sel.value
-        request('ui.language', { lang: v }, 10000).then(() => applyLang(v), () => applyLang(v))
-      }
-    },
-    LANGS.map(([v, l]) => h('option', { value: v, selected: v === LANG }, l))
-  )
-  const code = h('span', { class: 'lang-code' }, LANG === 'zh-CN' ? '中' : LANG.toUpperCase())
-  return h('label', { class: 'icon-btn lang-pick', title: t('Language') }, icon('globe', 14), code, sel)
+  const code = LANG === 'zh-CN' ? '中' : LANG.toUpperCase()
+  const pick = (v) => request('ui.language', { lang: v }, 10000).then(() => applyLang(v), () => applyLang(v))
+  // the app's own menu (like every other one), the current language ticked, its English name beside it
+  const NAMES = { en: 'English', 'zh-CN': 'Simplified Chinese', ja: 'Japanese', es: 'Spanish', th: 'Thai' }
+  const open = (e) =>
+    menu(e.currentTarget, [
+      { header: t('Language') },
+      ...LANGS.map(([v, l]) => ({ label: l, hint: v === 'en' ? '' : NAMES[v], icon: v === LANG ? 'check' : 'globe', cls: v === LANG ? 'lang-on' : '', onClick: () => v !== LANG && pick(v) }))
+    ])
+  return h('button', { class: 'icon-btn lang-pick', title: t('Language'), 'aria-label': t('Language'), 'aria-haspopup': 'menu', onClick: open }, icon('globe', 14), h('span', { class: 'lang-code' }, code), icon('down', 11))
 }
 // Applies a language picked with the globe (or in another Git Control window): strings are built once, so reload.
 function applyLang(v) {

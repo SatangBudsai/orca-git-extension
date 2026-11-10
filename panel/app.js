@@ -65,20 +65,16 @@ function t(s, vars) {
 // The language button at the top right: a globe and the language's code. The choice belongs to Git Control
 // (the plugin's own storage, and kept here for the next start), not to Orca's settings.
 function langPicker() {
-  const sel = h(
-    'select',
-    {
-      class: 'lang-select',
-      'aria-label': t('Language'),
-      onChange: () => {
-        const v = sel.value
-        request('ui.language', { lang: v }, 10000).then(() => applyLang(v), () => applyLang(v))
-      }
-    },
-    LANGS.map(([v, l]) => h('option', { value: v, selected: v === LANG }, l))
-  )
-  const code = h('span', { class: 'lang-code' }, LANG === 'zh-CN' ? '中' : LANG.toUpperCase())
-  return h('label', { class: 'icon-btn lang-pick', title: t('Language') }, icon('globe', 14), code, sel)
+  const code = LANG === 'zh-CN' ? '中' : LANG.toUpperCase()
+  const pick = (v) => request('ui.language', { lang: v }, 10000).then(() => applyLang(v), () => applyLang(v))
+  // the app's own menu (like every other one), the current language ticked, its English name beside it
+  const NAMES = { en: 'English', 'zh-CN': 'Simplified Chinese', ja: 'Japanese', es: 'Spanish', th: 'Thai' }
+  const open = (e) =>
+    menu(e.currentTarget, [
+      { header: t('Language') },
+      ...LANGS.map(([v, l]) => ({ label: l, hint: v === 'en' ? '' : NAMES[v], icon: v === LANG ? 'check' : 'globe', cls: v === LANG ? 'lang-on' : '', onClick: () => v !== LANG && pick(v) }))
+    ])
+  return h('button', { class: 'icon-btn lang-pick', title: t('Language'), 'aria-label': t('Language'), 'aria-haspopup': 'menu', onClick: open }, icon('globe', 14), h('span', { class: 'lang-code' }, code), icon('down', 11))
 }
 // Applies a language picked with the globe (or in another Git Control window): strings are built once, so reload.
 function applyLang(v) {
