@@ -82,7 +82,7 @@ const server = http.createServer((rq, rs) => {
     if (!sub) {
       if (mr.st === 'checking') checks++
       const st = key === '42/1' && !mr.approved ? 'not_approved' : mr.st
-      return send(200, { state: mr.state, force_remove_source_branch: !!mr.force, squash: !!mr.squash, detailed_merge_status: st, title: key, source_branch: 'f' + m[2], target_branch: 'main', author: { username: 'ann' }, user: { can_merge: true }, head_pipeline: { status: 'success' } })
+      return send(200, { state: mr.state, force_remove_source_branch: !!mr.force, squash: !!mr.squash, detailed_merge_status: st, title: key, source_branch: 'f' + m[2], target_branch: 'main', author: { username: 'ann' }, user: { can_merge: true }, head_pipeline: { status: mr.pipe || 'success' } })
     }
     send(404, { message: 'no route ' + u })
   })
@@ -148,6 +148,13 @@ try {
   }
   ok(mrs['42/9'].force === false && events.some((e) => e.startsWith('update 42/9') && e.includes('"remove_source_branch":false')), 'its own "delete source branch" is turned off before merging', events.filter((e) => e.includes('42/9')).join(' | '))
   ok(mergeBodies['42/9']?.should_remove_source_branch === false, 'and the merge asks not to delete it', JSON.stringify(mergeBodies['42/9']))
+  // merged, and a pipeline runs after the merge: it stays in the list (watched), not gone and back
+  mrs['42/9'].pipe = 'running'
+  const l1 = await handlers['reviews.list']({ fresh: true })
+  ok(l1.items.some((i) => i.number === 9 && i.state === 'merged' && i.watched && i.ci === 'running'), 'merged here, pipeline running: still listed, marked', JSON.stringify(l1.items.map((i) => [i.number, i.state, i.ci])))
+  mrs['42/9'].pipe = 'success'
+  const l2 = await handlers['reviews.list']({ fresh: true })
+  ok(!l2.items.some((i) => i.number === 9), 'its pipeline done: it leaves', JSON.stringify(l2.items.map((i) => [i.number, i.state, i.ci])))
 } catch (e) {
   fails++
   console.log('CRASH', e.stack)
