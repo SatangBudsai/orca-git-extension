@@ -4,6 +4,9 @@
 /* =========================================================================
    tiny DOM helpers
    ========================================================================= */
+/** The modifier as this keyboard writes it: ⌘ on a Mac, Ctrl+ elsewhere (both keys work everywhere). */
+const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || '')
+const MOD = IS_MAC ? '⌘' : 'Ctrl+'
 const $ = (sel, root = document) => root.querySelector(sel)
 
 function h(tag, props, ...children) {
@@ -284,7 +287,7 @@ function dialog({ title, message, fields = [], ok = 'OK', danger = false, cancel
  * A text field with suggestions below it: { value, detail?, disabled?, badge? }. Typing filters them
  * (by value or detail); ↑ ↓ move, Enter or a click picks one, Esc closes the list (not the dialog).
  */
-function combo(input, items) {
+function combo(input, items, { empty = 'No match: type the host or user@host' } = {}) {
   const list = h('div', { class: 'combo-list', role: 'listbox' })
   const caret = h('button', { type: 'button', class: 'combo-caret', tabindex: '-1', 'aria-label': 'Show suggestions', onMousedown: (e) => (e.preventDefault(), list.hidden ? (input.focus(), show(true)) : hide()) }, icon('down', 12))
   const wrap = h('div', { class: 'combo' }, input, caret, list)
@@ -300,7 +303,7 @@ function combo(input, items) {
   }
   const draw = () => {
     clear(list)
-    if (!shown.length) return list.append(h('div', { class: 'combo-empty' }, 'No match: type the host or user@host'))
+    if (!shown.length) return list.append(h('div', { class: 'combo-empty' }, empty))
     shown.forEach((it, i) =>
       list.append(
         h(
@@ -910,6 +913,14 @@ function rovReviews(r) {
  */
 async function tagManyModal(repos, onDone) {
   closeOverlays('.menu')
+  // two worktrees of one repository share its tags: one row per repository (the main folder first)
+  const seenRepo = new Set()
+  repos = [...repos]
+    .sort((a, b) => (b.main ? 1 : 0) - (a.main ? 1 : 0))
+    .filter((r) => {
+      const k = r.remote ? `${r.remoteHost}|${r.remote}`.toLowerCase() : r.path
+      return seenRepo.has(k) ? false : seenRepo.add(k)
+    })
   const paths = repos.map((r) => r.path)
   const byPath = new Map(repos.map((r) => [r.path, r]))
   const prefs = store.get('tagManyPrefs', { pattern: '', branch: '', push: true })
@@ -917,12 +928,16 @@ async function tagManyModal(repos, onDone) {
   let top = '' // the branch for every repo that has it
   const own = new Map() // repo → a branch picked on its row
   const branchesOf = new Map() // repo → Set of branch names (local and on origin)
+  const checkedOut = new Map() // repo → the branch checked out now
   let plan = null
   let planSeq = 0
   let busy = false
 
   const patternSel = h('select', { class: 'tm-sel mono' })
-  const branchSel = h('select', { class: 'tm-sel mono' })
+  const branchItems = []
+  const branchIn = h('input', { type: 'text', class: 'tm-branch-in mono', spellcheck: 'false', placeholder: 'branch' })
+  const branchBox = combo(branchIn, branchItems, { empty: 'No branch by that name in these repositories' })
+  const branchSel = { disabled: false, set disabled(v) { branchIn.disabled = v } } // enabled with the pattern
   const table = h('div', { class: 'tm-table' }, h('div', { class: 'inline-skeleton', style: { margin: '12px' } }, h('span'), h('span')))
   const status = h('div', { class: 'tm-status dim' })
   const push = h('input', { type: 'checkbox', checked: prefs.push !== false })
@@ -939,7 +954,7 @@ async function tagManyModal(repos, onDone) {
     { class: 'dialog tag-many-dialog', role: 'dialog' },
     h('div', { class: 'ai-title' }, h('span', { class: 'tm-badge' }, icon('tag', 14)), h('div', null, h('h3', null, repos.length === 1 ? `Tag ${repos[0].name}` : `Tag ${repos.length} repositories`), h('p', null, 'Everything is filled in: check the new tag, then create.'))),
     // the whole choice as one sentence
-    h('div', { class: 'tm-sentence' }, 'Create', patternSel, 'tags on branch', branchSel, h('span', { class: 'dim' }, 'as pushed to origin')),
+    h('div', { class: 'tm-sentence' }, 'Create', patternSel, 'tags on branch', branchBox, h('span', { class: 'dim tm-fetch-note' }, 'fetched from origin first')),
     table,
     h('div', { class: 'tm-opts' }, h('label', { class: 'check' }, push, 'Push the tags'), h('details', { class: 'tm-more' }, h('summary', null, 'Message'), msgIn), h('span', { class: 'grow' }), status),
     h('div', { class: 'buttons' }, h('button', { type: 'button', class: 'btn', onClick: () => !busy && close() }, 'Close'), h('span', { class: 'grow' }), okBtn)
@@ -950,7 +965,7 @@ async function tagManyModal(repos, onDone) {
   patternSel.disabled = branchSel.disabled = true // until the repos' patterns and branches are read
   // what to ask the server for each repo: its own pick, else the shared branch when it has it, else
   // the branch it has checked out
-  const branchFor = (p) => own.get(p) || (branchesOf.get(p)?.has(top) ? top : byPath.get(p)?.branch || top)
+  const branchFor = (p) => own.get(p) || (branchesOf.get(p)?.has(top) ? top : checkedOut.get(p) || byPath.get(p)?.branch || top)
 
   // 1. the patterns these repos use and their branches, both at once
   const [patterns] = await Promise.all([
@@ -959,6 +974,8 @@ async function tagManyModal(repos, onDone) {
       paths.map(async (p) => {
         const refs = await request('git', { op: 'refs', repo: p, args: {} }).catch(() => null)
         const set = new Set((refs?.local || []).map((b) => b.name))
+        const cur = (refs?.local || []).find((b) => b.current)?.name
+        if (cur) checkedOut.set(p, cur) // what is checked out now (the overview's copy may be older)
         for (const b of refs?.remote || []) if (/^[^/]+\//.test(b.name)) set.add(b.name.replace(/^[^/]+\//, ''))
         set.delete('HEAD')
         branchesOf.set(p, set)
@@ -986,17 +1003,31 @@ async function tagManyModal(repos, onDone) {
   const count = new Map()
   for (const set of branchesOf.values()) for (const b of set) count.set(b, (count.get(b) || 0) + 1)
   const onNow = new Map()
-  for (const r of repos) if (r.branch) onNow.set(r.branch, (onNow.get(r.branch) || 0) + 1)
+  for (const r of repos) {
+    const b = checkedOut.get(r.path) || r.branch
+    if (b) onNow.set(b, (onNow.get(b) || 0) + 1)
+  }
   top = prefs.branch && count.get(prefs.branch) === paths.length ? prefs.branch : [...onNow.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || [...count.keys()][0] || 'main'
   const names = [...count.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([b]) => b).slice(0, 300)
-  for (const b of names) branchSel.append(h('option', { value: b, selected: b === top }, paths.length > 1 ? `${b}  (${count.get(b)} of ${paths.length})` : b))
-  branchSel.addEventListener('change', () => ((top = branchSel.value), own.clear(), loadPlan()))
+  branchItems.push(...names.map((b) => ({ value: b, detail: paths.length > 1 ? `${count.get(b)} of ${paths.length}` : '' })))
+  branchIn.value = top
+  // a branch typed or picked that exists somewhere: the plan follows it (after a short pause while typing)
+  let branchT = null
+  branchIn.addEventListener('input', () => {
+    clearTimeout(branchT)
+    branchT = setTimeout(() => {
+      const v = branchIn.value.trim()
+      if (v && v !== top && count.has(v)) (top = v), own.clear(), loadPlan()
+    }, 350)
+  })
 
   async function loadPlan() {
     const my = ++planSeq
     const branches = Object.fromEntries(paths.map((p) => [p, branchFor(p)]))
+    okBtn.disabled = true
+    clear(table).append(h('div', { class: 'tm-empty dim tm-fetching' }, h('span', { class: 'spinner sm' }), ` Fetching ${top} from origin…`))
     try {
-      const r = await request('repos.tagPlan', { repos: paths, pattern, base: { kind: 'branch', name: top }, branches }, 90000)
+      const r = await request('repos.tagPlan', { repos: paths, pattern, base: { kind: 'branch', name: top }, branches, fetch: true }, 150000)
       if (my !== planSeq) return
       plan = r.rows
       drawTable()
@@ -1016,9 +1047,17 @@ async function tagManyModal(repos, onDone) {
       const name = h('input', { type: 'text', class: 'tm-name mono', value: row.next || '', spellcheck: 'false' })
       name.addEventListener('input', () => ((take.checked = !!name.value.trim()), countUp()))
       take.addEventListener('change', countUp)
-      const sel = h('select', { class: 'tm-row-branch mono', title: 'The branch to tag in this repository' })
-      for (const x of [...(branchesOf.get(row.repo) || [])].sort((a, c) => (a === b ? -1 : c === b ? 1 : a.localeCompare(c)))) sel.append(h('option', { value: x, selected: x === b }, x))
-      sel.addEventListener('change', () => (own.set(row.repo, sel.value), loadPlan()))
+      const own_ = branchesOf.get(row.repo) || new Set()
+      const rowIn = h('input', { type: 'text', class: 'tm-row-branch mono', value: b, spellcheck: 'false', title: 'The branch to tag in this repository' })
+      const sel = combo(rowIn, [...own_].sort((a, c) => (a === b ? -1 : c === b ? 1 : a.localeCompare(c))).map((x) => ({ value: x })), { empty: 'No branch by that name here' })
+      let rowT = null
+      rowIn.addEventListener('input', () => {
+        clearTimeout(rowT)
+        rowT = setTimeout(() => {
+          const v = rowIn.value.trim()
+          if (v && v !== b && own_.has(v)) own.set(row.repo, v), loadPlan()
+        }, 350)
+      })
       const fallback = !own.has(row.repo) && b !== top
       inputs.set(row.repo, { take, name, row })
       table.append(
@@ -1033,7 +1072,7 @@ async function tagManyModal(repos, onDone) {
             sel,
             row.error
               ? h('span', { class: 'bad' }, icon('alert', 11), row.error)
-              : h('span', { class: 'dim ellipsis', title: `${row.at} · ${row.hash}\n${row.subject || ''}` }, fallback ? `no ${top} here · ` : '', `${(row.hash || '').slice(0, 7)} ${row.subject || ''}`)
+              : h('span', { class: `ellipsis ${row.fetchError ? 'tm-warn' : 'dim'}`, title: `${row.at} · ${row.hash}\n${row.subject || ''}${row.fetchError ? `\nCould not fetch: ${row.fetchError}` : ''}` }, row.fetchError ? 'not fetched (as last fetched) · ' : '', fallback ? `no ${top} here · ` : '', `${(row.hash || '').slice(0, 7)} ${row.subject || ''}`)
           ),
           h('span', { class: 'tm-latest mono' }, row.latest || h('span', { class: 'dim' }, 'none yet')),
           h('span', { class: 'tm-new' }, done ? h('span', { class: 'pill tm-already', title: `That commit already has ${row.already[0]}: nothing to do` }, icon('check', 10), `Already ${row.already[0]}`) : row.error ? h('span', { class: 'dim' }, '–') : [h('span', { class: 'tm-arrow dim' }, '→'), name])
@@ -1812,7 +1851,7 @@ function renderHeader() {
     sep(),
     phoneLbl(iconBtn('refresh', 'Refresh', () => manualRefresh(), { disabled: !state.repo }), 'Refresh'),
     phoneLbl(iconBtn('undo', 'Undo the last action (commit, reset, merge, rebase…)', undoLast, { disabled: dis }), 'Undo'),
-    IN_TAB && phoneLbl(iconBtn('search', 'Commands (Ctrl+.)', () => commandPalette(), { disabled: dis }), 'Actions'),
+    IN_TAB && phoneLbl(iconBtn('search', `Commands (${MOD}.)`, () => commandPalette(), { disabled: dis }), 'Actions'),
     phoneLbl(iconBtn('settings', 'Git settings (identity, HTTPS, remotes)', () => setTab('settings'), { disabled: !state.repo }), 'Settings'),
     !IN_TAB && iconBtn('expand', 'Open Git Control in a full tab', openTab, { disabled: dis })
   ])
@@ -1977,7 +2016,7 @@ function renderTabs() {
   for (const [id, label, ic] of TABS) {
     const count = id === 'changes' ? st?.files.length : id === 'stash' ? st?.stashCount : id === 'reviews' ? reviewCount() : 0
     nav.append(
-      h('button', { class: `tab ${state.tab === id ? 'active' : ''}`, onClick: () => setTab(id) }, icon(ic, 13), label, count ? h('span', { class: `badge tb-${id}` }, count) : null)
+      h('button', { class: `tab ${state.tab === id ? 'active' : ''}`, onClick: () => setTab(id) }, icon(ic, 13), label, count ? h('span', { class: `badge tb-${id} ${id === 'reviews' && reviewForMe() ? 'hot' : ''}`, title: id === 'reviews' ? `${count} open${reviewForMe() ? `, ${reviewForMe()} waiting for you` : ''}` : null }, count) : null)
     )
   }
   // on a narrow screen the tabs scroll: keep the chosen one in view
@@ -6178,10 +6217,14 @@ const rvMarkSeen = (it) => it.comments != null && store.set('rvSeen', { ...rvSee
 const inThisRepo = (it, data) => !!data.repoPath && it.repo?.toLowerCase() === data.repoPath.toLowerCase() && (!data.repoHost || !it.host || it.host.toLowerCase() === data.repoHost.toLowerCase())
 /** The tab's badge: waiting for me, in this repository unless "All repos" is chosen. */
 function reviewCount() {
+  // every open one, as the Open tab and the status bar count them (MR / PR shows every repository)
   const d = state.reviews
-  if (!d || d.repo !== state.repo) return 0
-  const all = !d.repoPath || store.get('reviewsAllRepos', false)
-  return d.items.filter((it) => needsMe(it) && (all || inThisRepo(it, d))).length
+  if (!d) return 0
+  return d.items.filter((it) => isOpenMr(it)).length
+}
+/** How many of the open ones wait for my approval (the tab's badge stands out when some do). */
+function reviewForMe() {
+  return (state.reviews?.items || []).filter((it) => needsMe(it)).length
 }
 /** Waiting for me: I am asked to review it or it is assigned to me, it is not mine, and I have not approved it yet. */
 const isMine = (it) => it.roles.includes('mine') || (!!it.me && it.author === it.me)
@@ -6217,11 +6260,11 @@ function prefetchReviews() {
   const fresh = state.reviews?.repo === state.repo && Date.now() - state.reviews.at < 120000
   if (!fresh && !reviewsLoading) loadReviews(true).catch(() => {})
 }
-async function loadReviews(force) {
+async function loadReviews(force, fresh = false) {
   if (!force && state.reviews && state.reviews.repo === state.repo && Date.now() - state.reviews.at < 120000) return state.reviews
   if (force && state.rvMore?.repo === state.repo && !mergedLoading) state.rvMore = null // a fresh list: merged ones again too
   const repo = state.repo
-  reviewsLoading ||= request('reviews.list', { repo }, 90000)
+  reviewsLoading ||= request('reviews.list', { repo, fresh }, 90000) // fresh: the Refresh button, past the shared answer
     .then((r) => {
       // a host that did not answer this time keeps its last list (and its error shows above it)
       const failed = new Set((r.errors || []).map((e) => String(e).split(': ')[0]))
@@ -6260,7 +6303,7 @@ async function viewReviews() {
   // Open: everyone's by default; For me = asked of me or assigned, Mine = opened by me
   const who = filter === 'todo' ? store.get('rvWho', 'all') : 'all'
   // All is always this repository's; Review can show this repository or every one
-  const allRepos = !data.repoPath || (filter !== 'all' && store.get('reviewsAllRepos', false))
+  const allRepos = true // MR / PR always shows every repository; the project list narrows to one
   const q = (state.rvQ ||= { text: '', repo: '', label: '' })
   // older merged ones loaded with Show more stay through refreshes (until the project changes)
   const extra = state.rvMore?.repo === state.repo ? state.rvMore : null
@@ -6274,24 +6317,17 @@ async function viewReviews() {
       (!q.label || (it.labels || []).includes(q.label)) &&
       words.every((w) => `${it.title} ${it.repo} ${it.author} ${it.source || ''} ${it.number} ${(it.labels || []).join(' ')}`.toLowerCase().includes(w))
   )
-  const where = data.repoPath && filter === 'all'
-    ? h('span', { class: 'rv-scope-note dim', title: `${data.repoHost}/${data.repoPath}` }, icon('branch', 11), `${data.repoPath.split('/').pop()} only`)
-    : data.repoPath && h(
-    'div',
-    { class: 'segmented' },
-    data.repoPath && h('button', { class: allRepos ? '' : 'on', title: `${data.repoHost}/${data.repoPath}`, onClick: () => (store.set('reviewsAllRepos', false), renderView({ force: true })) }, icon('branch', 11), data.repoPath.split('/').pop()),
-    h('button', { class: allRepos ? 'on' : '', title: 'Every repository on GitHub and GitLab you are signed in to', onClick: () => (store.set('reviewsAllRepos', true), renderView({ force: true })) }, 'All repos')
-  )
+  const where = null
   // GitLab-style tabs with counts: To review (waiting for me), Opened by me, All open
   const seg = h(
     'div',
     { class: 'segmented rv-filter rv-tabs' },
     RV_TABS.map(([k, l, fn]) => {
       // each tab counts in its own scope (All: this repository only)
-      const pool = k === 'all' && data.repoPath ? allItems.filter((it) => inThisRepo(it, data)) : k === filter ? scoped : allItems.filter((it) => !data.repoPath || store.get('reviewsAllRepos', false) || inThisRepo(it, data))
+      const pool = k === filter ? scoped : allItems
       let n = pool.filter(fn).length
       // All: every one this repository has, when GitLab told how many were merged (fetched when opened)
-      if (k === 'all' && data.mergedTotal != null) n = pool.filter(isOpenMr).length + Math.max(data.mergedTotal, pool.filter((it) => !isOpenMr(it)).length)
+
       const hot = k === 'todo' && pool.some(needsMe)
       return h('button', { class: filter === k ? 'on' : '', title: k === 'todo' ? 'Every open merge request of the repositories you work in, and the ones asked of you anywhere, until merged' : 'Every merge request of this repository, open and merged', onClick: () => ((state.reviewFilter = k), state.rvSel.clear(), renderView({ force: true })) }, l, h('span', { class: `rv-n ${hot ? 'hot' : ''}` }, String(n)))
     })
@@ -6307,11 +6343,11 @@ async function viewReviews() {
         h(
           'div',
           { class: 'segmented rv-who' },
-          [['all', 'Everyone', 'Every open one'], ['me', 'For me', 'Asked to review or assigned to me'], ['mine', 'Mine', 'Opened by me']].map(([k, l, t]) => h('button', { class: who === k ? 'on' : '', title: t, onClick: () => (store.set('rvWho', k), state.rvSel.clear(), renderView({ force: true })) }, l, k === 'me' && scoped.some(needsMe) ? h('span', { class: 'rv-n hot' }, String(scoped.filter(needsMe).length)) : null))
+          [['all', 'Everyone', 'Every open one'], ['me', 'For me', 'Asked to review or assigned to me'], ['can', 'Can merge', 'The ones you may merge, assigned to you or not'], ['mine', 'Mine', 'Opened by me']].map(([k, l, t]) => h('button', { class: who === k ? 'on' : '', title: t, onClick: () => (store.set('rvWho', k), state.rvSel.clear(), renderView({ force: true })) }, l, k === 'me' && scoped.some(needsMe) ? h('span', { class: 'rv-n hot' }, String(scoped.filter(needsMe).length)) : null))
         ),
       h('span', { class: 'grow' }),
       h('span', { class: 'dim rv-updated', style: { fontSize: '11.5px' } }, `Updated ${ago(data.at / 1000)}`),
-      h('button', { class: 'btn sm', onClick: async (e) => ((e.currentTarget.disabled = true), await loadReviews(true).catch((err) => toast(err.message, 'error')), renderView({ force: true })) }, icon('refresh', 12), 'Refresh')
+      h('button', { class: 'btn sm', onClick: async (e) => ((e.currentTarget.disabled = true), await loadReviews(true, true).catch((err) => toast(err.message, 'error')), renderView({ force: true })) }, icon('refresh', 12), 'Refresh')
     )
   )
 
@@ -6323,8 +6359,10 @@ async function viewReviews() {
     class: 'rv-search',
     placeholder: 'Filter by title, author, branch, number…',
     onInput: (e) => {
+      // kept at once (a redraw in between must not drop what was typed); only the redraw waits
+      state.rvQ.text = e.target.value
       clearTimeout(rvSearchBox._t)
-      rvSearchBox._t = setTimeout(() => ((state.rvQ.text = e.target.value), renderView({ force: true })), 200)
+      rvSearchBox._t = setTimeout(() => renderView({ force: true }), 200)
     },
     onKeydown: (e) => e.key === 'Escape' && e.target.value && (e.preventDefault(), (e.target.value = ''), (state.rvQ.text = ''), renderView({ force: true }))
   }))
@@ -6369,7 +6407,7 @@ async function viewReviews() {
   }
   for (const e of data.errors || []) root.append(h('div', { class: 'banner' }, h('div', { class: 'row' }, icon('alert'), h('span', null, e))))
 
-  const whoFn = { me: (it) => forMe(it) || mergedStillRunning(it), mine: (it) => isMine(it), all: () => true }[who] || (() => true)
+  const whoFn = { me: (it) => forMe(it) || mergedStillRunning(it), can: (it) => it.canMerge === true && isOpenMr(it), mine: (it) => isMine(it), all: () => true }[who] || (() => true)
   const fn0 = RV_TABS.find(([k]) => k === filter)[2]
   const fn = (it) => fn0(it) && whoFn(it)
   // waiting for my approval first, then others asked of me (approved, waiting merge), then my own
@@ -6391,7 +6429,7 @@ async function viewReviews() {
       'div',
       { class: 'section-head rv-head' },
       openItems.length > 0 && selAll,
-      { todo: { me: 'Asked of you, until merged', mine: 'Opened by you, until merged', all: 'Open, whoever opened them, until merged' }[who], all: `Every merge request of ${data.repoPath ? data.repoPath.split('/').pop() : 'this repository'}` }[filter],
+      { todo: { me: 'Asked of you, until merged', can: 'You may merge these', mine: 'Opened by you, until merged', all: 'Open, whoever opened them, until merged' }[who], all: 'Every merge request, open and merged' }[filter],
       h('span', { class: 'count' }, items.length)
     )
   )
@@ -6401,8 +6439,8 @@ async function viewReviews() {
         'div',
         { class: 'empty' },
         icon('check', 28),
-        h('div', null, filter === 'todo' ? (who === 'me' ? 'Nothing waits for you' : who === 'mine' ? 'Nothing of yours is open' : 'No open merge requests') : 'No open merge requests in this repository'),
-        filter === 'todo' && !allRepos && h('button', { class: 'btn sm', style: { marginTop: '10px' }, onClick: () => (store.set('reviewsAllRepos', true), renderView({ force: true })) }, 'Show all repos')
+        h('div', null, filter === 'todo' ? (who === 'me' ? 'Nothing waits for you' : who === 'can' ? 'Nothing open that you may merge' : who === 'mine' ? 'Nothing of yours is open' : 'No open merge requests') : 'No merge requests'),
+        null
       )
     )
   const list = h('div', { class: 'rv-list' })
@@ -6420,7 +6458,36 @@ async function viewReviews() {
       if (d !== day) list.append(h('div', { class: 'rv-day' }, (day = d)))
       list.append(reviewRow(it, { onSelect, filter }))
     }
-  } else for (const it of items) list.append(reviewRow(it, { onSelect, filter }))
+  } else if (filter === 'todo' && !words.length && items.length) {
+    const groups = new Map()
+    for (const it of items) {
+      const k = `${it.host}|${it.repo}`
+      if (!groups.has(k)) groups.set(k, { key: k, repo: it.repo, group: it.group, items: [] })
+      groups.get(k).items.push(it)
+    }
+    const collapsed = new Set(store.get('rvCollapsed', []))
+    const order = (g) => [g.group ? g.group.order : 1e6, g.group ? g.group.repoOrder ?? 1e6 : 0, g.repo.split('/').pop()]
+    const sorted = [...groups.values()].sort((a, b) => {
+      const [x, y] = [order(a), order(b)]
+      return x[0] - y[0] || x[1] - y[1] || String(x[2]).localeCompare(String(y[2]))
+    })
+    for (const g of sorted) {
+      const shut = collapsed.has(g.key)
+      const forYou = g.items.filter(needsMe).length
+      list.append(
+        h(
+          'button',
+          { class: `rv-repo-head ${shut ? 'shut' : ''}`, title: `${g.repo}${shut ? ' (show)' : ' (hide)'}`, onClick: () => (shut ? collapsed.delete(g.key) : collapsed.add(g.key), store.set('rvCollapsed', [...collapsed].slice(-200)), renderView({ force: true })) },
+          icon(shut ? 'right' : 'down', 11),
+          g.group?.name ? h('span', { class: 'rv-repo-grp' }, g.group.name, ' ›') : null,
+          h('span', { class: 'rv-repo-name' }, g.repo.split('/').pop()),
+          h('span', { class: 'rv-group-n' }, `${g.items.length} open`),
+          forYou ? h('span', { class: 'rv-repo-you' }, `${forYou} for you`) : null
+        )
+      )
+      if (!shut) for (const it of g.items) list.append(reviewRow(it, { onSelect, filter }))
+    }
+  } else for (const it of items) list.append(reviewRow(it, { onSelect, filter, showRepo: true }))
   root.append(list)
   if (filter === 'all') {
     // merged ones are fetched only here, when All is open (GitHub limits how often it is searched)
@@ -6717,7 +6784,7 @@ function moreMergedFooter(data, extra, filtering) {
   return foot
 }
 
-function reviewRow(it, { onSelect, filter } = {}) {
+function reviewRow(it, { onSelect, filter, showRepo = filter === 'all' } = {}) {
   const open = () => openLink(it.url)
   const noun = it.provider === 'github' ? 'pull request' : 'merge request'
   const show = () => reviewDetailSheet(it)
@@ -6754,6 +6821,7 @@ function reviewRow(it, { onSelect, filter } = {}) {
       h(
         'div',
         { class: 'review-title' },
+        showRepo ? h('span', { class: 'pill rv-repo-chip', title: it.repo }, it.repo.split('/').pop()) : null,
         h('span', { class: 'ellipsis', title: it.title }, it.title),
         it.state === 'closed' && h('span', { class: 'pill rv-closed' }, 'Closed'),
         mergedStillRunning(it) && h('span', { class: 'pill rv-merged-run', title: 'Merged; its pipeline is still running' }, icon('merge', 10), 'Merged · pipeline running'),
@@ -6761,7 +6829,9 @@ function reviewRow(it, { onSelect, filter } = {}) {
         it.roles.includes('review') && h('span', { class: 'pill role' }, 'Review requested'),
         it.roles.includes('assigned') && h('span', { class: 'pill role' }, 'Assigned'),
         isMine(it) && isOpenMr(it) && h('span', { class: 'pill role rv-mine', title: 'You opened it' }, 'Opened by me'),
-        isOpenMr(it) && it.noReviewer && !isMine(it) && !it.roles.includes('review') && h('span', { class: 'pill rv-noreviewer', title: 'Nobody was asked to review it' }, 'No reviewer'),
+        isOpenMr(it) && it.noAssignee && (it.noReviewer || it.provider === 'github') && !isMine(it) && !it.roles.includes('review') && h('span', { class: 'pill rv-noreviewer', title: it.provider === 'github' ? 'Nobody is assigned' : 'Nobody is assigned and nobody was asked to review it' }, 'Unassigned'),
+        isOpenMr(it) && it.noReviewer && !it.noAssignee && !isMine(it) && !it.roles.includes('review') && h('span', { class: 'pill rv-noreviewer', title: 'Nobody was asked to review it' }, 'No reviewer'),
+        isOpenMr(it) && it.canMerge === true && !forMe(it) && !isMine(it) && h('span', { class: 'pill rv-canmerge', title: 'You may merge it (your role in the project allows it)' }, icon('merge', 10), 'You can merge'),
         it.ci && !ciBusy(it) && h('span', { class: `ci ci-${it.ci}`, title: `CI: ${it.ci}` }, ciIcon(it.ci), it.ci), // a running one: the pill below says it
         approvals,
         it.myApproved && h('span', { class: 'pill rv-waiting', title: 'You approved it; it is not merged yet' }, icon('check', 10), 'Approved · waiting merge'),
@@ -8360,12 +8430,21 @@ async function reviewDiffSheet(it) {
   if (sheet.el.isConnected) clear(sheet.el.querySelector('.sheet-body')).append(wrap)
 }
 
+let queuedUi = null
+/** The status bar asked for a tab (MR/PR) or Repo Overview. */
+function applyUi({ tab, overview } = {}) {
+  if (overview) return reposOverview()
+  if (tab && TABS.some(([id]) => id === tab) && state.tab !== tab) setTab(tab)
+}
 // the status bar "reviews" item opens this tab on Reviews
 if (hasOrca) {
   try {
-    window.orca.plugin?.on?.('ui.show', ({ tab, overview } = {}) => isShown() && (overview ? reposOverview() : tab && setTab(tab)))
+    // shown now: at once; hidden (another tab in front, Orca brings this one up next): when it shows
+    window.orca.plugin?.on?.('ui.show', (ui = {}) => (isShown() ? applyUi(ui) : (queuedUi = ui)))
+    // the status bar's ↻ checked MR / PR now: an open MR / PR tab reads the new list
+    window.orca.plugin?.on?.('reviews.changed', () => state.tab === 'reviews' && loadReviews(true, true).then(() => renderView({ force: true }), () => {}))
   } catch {}
-  setTimeout(() => request('ui.pending', {}).then((p) => (p?.overview ? reposOverview() : p?.tab && setTab(p.tab)), () => {}), 800)
+  setTimeout(() => request('ui.pending', {}).then((p) => p && applyUi(p), () => {}), 800)
 }
 
 
@@ -8466,6 +8545,7 @@ if (IN_TAB) {
     request('graph.visible', { visible: now }).catch(() => {})
     // back on screen after another project: one quiet check instead of polling while hidden
     if (now && wasHidden) pollStatus(true)
+    if (now && queuedUi) (applyUi(queuedUi), (queuedUi = null)) // asked for while it was hidden
   }
   document.addEventListener('visibilitychange', report)
   new ResizeObserver(report).observe(document.documentElement)
@@ -8716,7 +8796,7 @@ function commandPalette() {
     ['Merge request…', 'pr', () => mergeRequestDialog()],
     ['Go to the checked-out commit', 'current', () => goToHead()],
     ['Search commits', 'search', () => (setTab('history'), setTimeout(() => searchBox?.focus(), 50))],
-    ['Undo the last action (Ctrl+Z)', 'undo', () => undoLast()],
+    [`Undo the last action (${MOD}Z)`, 'undo', () => undoLast()],
     ['Undo history: go back to any earlier point', 'history', () => setTab('reflog')],
     ['Refresh', 'refresh', () => manualRefresh()],
     [ROW_H > 28 ? 'Compact rows' : 'Comfortable rows', 'rows', () => setDensity(ROW_H > 28 ? 'compact' : 'comfortable')],
@@ -8772,12 +8852,12 @@ function commandPalette() {
 
 function shortcutsHelp() {
   const rows = [
-    ['Ctrl+.', 'Commands'],
+    [`${MOD}.`, 'Commands'],
     ['/', 'Search commits'],
     ['↑ ↓ or j k', 'Move through the graph'],
     ['Enter', 'Open the commit'],
     ['Esc', 'Close'],
-    ['F5 / Ctrl+R', 'Refresh']
+    [IS_MAC ? '⌘R' : 'F5 / Ctrl+R', 'Refresh']
   ]
   const box = h('div', { class: 'dialog kbd-dialog' }, h('h3', null, 'Keyboard shortcuts'), h('div', { class: 'kbd-help' }, rows.map(([k, v]) => [h('kbd', null, k), h('span', null, v)])), h('div', { class: 'buttons' }, h('button', { class: 'btn primary', onClick: () => done() }, 'Close')))
   const done = () => {
@@ -8799,15 +8879,23 @@ document.addEventListener('keydown', (e) => {
 })
 
 ;(async () => {
+  // opened from the status bar (MR/PR, Overview): asked before anything is drawn, so the tab opens
+  // straight on it instead of showing the tab used last first
+  let pending = null
   if (IN_TAB) {
+    const [doc, ui] = await Promise.all([window.orca.document.get().catch(() => null), hasOrca ? request('ui.pending', {}, 3000).catch(() => null) : null])
     try {
-      const doc = await window.orca.document.get()
-      docRepo = JSON.parse(doc.content.text || '{}').repo || null
+      docRepo = JSON.parse(doc?.content?.text || '{}').repo || null
     } catch {}
+    pending = ui
   }
   const start = state.pinned || (IN_TAB ? docRepo : store.get('lastRepo', null))
   if (start) {
     setRepo(start)
+    if (pending?.tab && TABS.some(([id]) => id === pending.tab)) state.tab = pending.tab
+    if (pending?.overview) state.tab = 'repos'
+    // kept as this repository's tab, so restoring it later does not go back to the one before
+    if (pending?.tab || pending?.overview) viewMem.set({ tab: state.tab, scroll: 0, scrollTab: state.tab, open: null })
     if (state.status) renderAll()
   }
   refreshAll(true)

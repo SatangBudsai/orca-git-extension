@@ -29,6 +29,8 @@ const orca = {
   host: {
     has: (n) => ['statusBar.update', 'workspace.list'].includes(n),
     call: async (n, a) => {
+      // like Orca: a status bar tooltip over 256 characters is refused
+      if (n === 'statusBar.update' && a.tooltip && a.tooltip.length > 256) throw new Error('tooltip: Too big: expected string to have <=256 characters')
       if (n === 'statusBar.update') sent.push(a)
       if (n === 'workspace.readContext') throw new Error('no context')
       // one Orca workspace: the plain folder that holds both repositories (ABC with A and B inside)
