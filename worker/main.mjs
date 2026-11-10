@@ -2605,6 +2605,16 @@ async function reviewsListUncached(orca, repo, { page = 1, mergedOnly = false, m
       if (ap) Object.assign(it, ap)
     })
   )
+  // the ones merged here (the queue) whose pipeline still runs after the merge: watched until it is
+  // done, whoever's they are, so a merged row stays in Open, marked, instead of leaving and coming back
+  if (!mergedOnly) {
+    const seen = new Set(items.map((i) => i.url))
+    const watch = [...mergeJobs.values()].filter((j) => j.state === 'merged' && !seen.has(j.it.url) && Date.now() - j.at < 2 * 3600_000).slice(0, 10)
+    await pool(watch, 4, async (j) => {
+      const ci = await reviewCi(j.it, 15_000).catch(() => null)
+      if (ci === 'running' || ci === 'pending') items.push({ ...j.it, roles: j.it.roles?.length ? j.it.roles : ['repo'], state: 'merged', recent: true, watched: true, mergedAt: j.at / 1000, ci })
+    })
+  }
   // grouped like Orca's sidebar: the Project Group of the repository each one belongs to
   const byRepo = new Map(others.map((o) => [`${o.host}|${String(o.path).toLowerCase()}`, o]))
   for (const it of items) {
@@ -2764,7 +2774,8 @@ function queueMerges(items, { approve = true } = {}) {
 
 function mergeQueueState() {
   // finished ones are shown for a while, then dropped
-  for (const [url, j] of mergeJobs) if (['merged', 'failed'].includes(j.state) && Date.now() - j.at > 15 * 60_000) mergeJobs.delete(url)
+  // failed ones go after 15 minutes; merged ones are kept 2 hours (their pipeline is watched meanwhile)
+  for (const [url, j] of mergeJobs) if ((j.state === 'failed' && Date.now() - j.at > 15 * 60_000) || (j.state === 'merged' && Date.now() - j.at > 2 * 3600_000)) mergeJobs.delete(url)
   const lanes = new Map()
   for (const j of mergeJobs.values())
     if (j.state === 'queued') {
@@ -3303,7 +3314,7 @@ async function ciStatus(repo, { ref = 'HEAD' } = {}) {
   })
 }
 /** CI state of one review item (pull/merge request head), remembered for a minute. */
-function reviewCi(it) {
+function reviewCi(it, ttl = 60_000) {
   return slow('rci|' + it.url, async () => {
     const { w, via } = await itemTarget(it)
     if (w.kind === 'github') {
@@ -3315,7 +3326,7 @@ function reviewCi(it) {
       return pr?.head?.sha ? (await githubCommitCi(w, via, pr.head.sha)) ?? null : null
     }
     return CI_STATE((await gitlabGet(w, via, w.mr).catch(() => null))?.head_pipeline?.status)
-  }, process.env.GITX_REVIEWS_POLL ? 1 : 60_000) // tests poll fast: no caching
+  }, process.env.GITX_REVIEWS_POLL || process.env.GITX_API_BASE ? 1 : ttl) // tests: no caching
 }
 
 // ---------- line comments on a pull/merge request ----------
@@ -4326,8 +4337,17 @@ Click to open Git Control`
   // the status bar's ↻ beside MR/PR: ask GitHub and GitLab now, not at the next poll
   orca.commands.register('checkReviews', async () => {
     listShared.clear()
-    orca.host.has('statusBar.update') && (await orca.host.call('statusBar.update', { id: 'reviews-check', text: 'Checking…', tooltip: 'Checking merge and pull requests…', tone: 'accent' }).catch(() => {}))
-    await pollReviews()
+    // Orca's status bar has no spinning icon: a spinner drawn with characters while it checks
+    const frames = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
+    let f = 0
+    const spin = () => orca.host.has('statusBar.update') && orca.host.call('statusBar.update', { id: 'reviews-check', text: `${frames[f++ % frames.length]} Checking`, tooltip: 'Checking merge and pull requests…', tone: 'accent' }).catch(() => {})
+    spin()
+    const spinner = setInterval(spin, 120)
+    try {
+      await pollReviews()
+    } finally {
+      clearInterval(spinner)
+    }
     orca.host.has('statusBar.update') && (await orca.host.call('statusBar.update', { id: 'reviews-check', text: '', tooltip: `Checked at ${new Date().toLocaleTimeString()}. Click to check again`, tone: 'neutral' }).catch(() => {}))
     orca.panels.post?.('reviews.changed', {})
     return 'Checked merge and pull requests'

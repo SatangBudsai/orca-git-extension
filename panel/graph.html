@@ -8266,7 +8266,7 @@ const RV_TABS = [
 const ciBusy = (it) => it.ci === 'running' || it.ci === 'pending'
 /** Merged in the last hours but its pipeline still runs: it stays in Review until that is done. */
 function mergedStillRunning(it) {
-  return it.state === 'merged' && !!it.recent && ciBusy(it) && (isMine(it) || it.roles.includes('review') || it.roles.includes('assigned'))
+  return it.state === 'merged' && !!it.recent && ciBusy(it) && (it.watched || isMine(it) || it.roles.includes('review') || it.roles.includes('assigned') || it.roles.includes('repo'))
 }
 /**
  * The Review & MR count without opening the tab: the last list at once (from this device), then a
@@ -8634,11 +8634,12 @@ function applyQueue(r) {
     const ref = `${j.repo} !${j.number}`
     if (j.state === 'merged') {
       toast(`Merged ${ref}`)
-      const row = document.querySelector(`.review-row[data-url="${CSS.escape(url)}"]`)
+      // it stays where it is, now marked merged (a pipeline usually runs after the merge); the next
+      // list says whether it still runs (it stays) or is done (it leaves then, once), never gone and back
       const items = state.reviews?.items
-      const i = items ? items.findIndex((x) => x.url === url) : -1
-      if (row) rowDone(row, 'merge', items?.[i]).catch(() => {})
-      if (i >= 0) items.splice(i, 1)
+      const it = items?.find((x) => x.url === url)
+      if (it) Object.assign(it, { state: 'merged', recent: true, watched: true, mergedAt: Date.now() / 1000, ci: ciBusy(it) ? it.ci : 'pending' })
+      if (state.tab === 'reviews') renderView({ force: true })
     } else if (j.state === 'failed') toast(`${ref} was not merged: ${j.error}`, 'error', 9000)
     else if (j.state === 'auto') toast(`${ref} merges by itself when its pipeline passes`)
   }
