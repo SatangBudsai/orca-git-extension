@@ -375,11 +375,25 @@ function combo(input, items, { empty = t('No match: type the host or user@host')
     active = shown.findIndex((it) => !it.disabled)
     list.hidden = false
     wrap.classList.add('open')
+    // drawn on top of the page, not inside its row: rows below and scrolling tables can't cover or clip it
+    if (list.parentNode !== document.body) document.body.append(list)
+    place()
     draw()
+    addEventListener('scroll', place, true)
+    addEventListener('resize', place)
+  }
+  const place = () => {
+    const r = input.getBoundingClientRect()
+    const below = innerHeight - r.bottom - 8
+    const up = below < 160 && r.top > below
+    Object.assign(list.style, { position: 'fixed', left: r.left + 'px', width: r.width + 'px', right: 'auto', top: up ? 'auto' : r.bottom + 4 + 'px', bottom: up ? innerHeight - r.top + 4 + 'px' : 'auto', maxHeight: Math.min(232, (up ? r.top : below) - 8) + 'px' })
   }
   const hide = () => {
     list.hidden = true
     wrap.classList.remove('open')
+    removeEventListener('scroll', place, true)
+    removeEventListener('resize', place)
+    if (list.parentNode === document.body) wrap.append(list)
   }
   const move = (d) => {
     if (!shown.length) return
@@ -2357,7 +2371,7 @@ document.addEventListener(
   (e) => {
     const top = state.sheets[state.sheets.length - 1]
     if (!top || top.dock || e.button !== 0) return
-    if (e.target.closest?.('.sheet, .overlay, .menu, .tip, #toasts, header, .side-backdrop')) return
+    if (e.target.closest?.('.sheet, .overlay, .menu, .combo-list, .tip, #toasts, header, .side-backdrop')) return
     if (!e.target.isConnected) return
     closeSheet()
   },

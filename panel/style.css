@@ -1945,7 +1945,7 @@ body.compact .pc-ref, body.compact .pc-stages, body.compact .pc-by, .side-panel 
 .combo-caret:hover { color: var(--t1); }
 .combo-caret svg { transition: transform .15s var(--ease); }
 .combo.open .combo-caret svg { transform: rotate(180deg); }
-.combo-list { position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 5; max-height: 232px; overflow-y: auto; padding: 4px; border-radius: var(--radius); background: var(--card); border: 1px solid var(--line-hi); box-shadow: var(--shadow); animation: pop .12s var(--ease); }
+.combo-list { position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: var(--z-menu, 1000); max-height: 232px; overflow-y: auto; padding: 4px; border-radius: var(--radius); background: var(--card); border: 1px solid var(--line-hi); box-shadow: var(--shadow); animation: pop .12s var(--ease); }
 .combo-list[hidden] { display: none; }
 .combo-item { display: flex; align-items: center; gap: 10px; min-height: 32px; padding: 4px 8px; border-radius: var(--r-xs); cursor: pointer; font-size: 13px; }
 .combo-item.active { background: var(--hover); }
