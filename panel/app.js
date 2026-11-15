@@ -6032,8 +6032,9 @@ async function mergeRequestDialog(target, source, swapped) {
   }
   if (!info.commits.length) return toast(t('{source} and {target} have the same commits: there is nothing to merge.', { source: info.source, target: info.target }), 'error')
   const isGh = info.kind === 'github'
-  const noun = isGh ? t('pull request') : t('merge request')
-  const service = isGh ? 'GitHub' : info.host
+  const isBb = info.kind === 'bitbucket' // pull requests; no people to pick here, no squash when it is opened
+  const noun = isGh || isBb ? t('pull request') : t('merge request')
+  const service = isGh ? 'GitHub' : isBb ? 'Bitbucket' : info.host
   const repo = state.repo
   const humanize = (b) => b.replace(/^[\w-]+\//, '').replace(/[-_]+/g, ' ').replace(/^./, (c) => c.toUpperCase())
 
@@ -6050,11 +6051,13 @@ async function mergeRequestDialog(target, source, swapped) {
   const reviewers = peoplePicker(t('Search…'), { meLabel: t('Add me') })
   if (remembered?.reviewers) reviewers.set(remembered.reviewers)
   const removeSource = h('input', { type: 'checkbox' })
-  removeSource.checked = true // GitLab's default for a new merge request
+  removeSource.checked = !isBb // GitLab's default for a new merge request (Bitbucket's is off)
   const squash = h('input', { type: 'checkbox' })
   const peopleNote = h('div', { class: 'dim pp-note' }, h('span', { class: 'spinner' }), t('Loading members…'))
-  const gitlabOpts = !isGh && h('div', { class: 'mr-opts' }, h('label', { class: 'check' }, removeSource, t('Delete source branch when merge request is accepted')), h('label', { class: 'check' }, squash, t('Squash commits when merge request is accepted')))
-  request('mr.people', { repo, query: '' }, 30000).then(
+  const gitlabOpts = isBb
+    ? h('div', { class: 'mr-opts' }, h('label', { class: 'check' }, removeSource, t('Close source branch after the pull request is merged')))
+    : !isGh && h('div', { class: 'mr-opts' }, h('label', { class: 'check' }, removeSource, t('Delete source branch when merge request is accepted')), h('label', { class: 'check' }, squash, t('Squash commits when merge request is accepted')))
+  if (!isBb) request('mr.people', { repo, query: '' }, 30000).then(
     (r) => {
       peopleNote.remove()
       if (!r.via) {
@@ -6096,12 +6099,13 @@ async function mergeRequestDialog(target, source, swapped) {
           'div',
           { class: 'grow' },
           h('div', null, h('b', null, t('Open link')), ' ', t('works right away: {service} opens with this filled in, press Create there.', { service })),
-          h('div', { class: 'dim' }, h('b', null, t('Create now')), ' ', info.tools.installed ? t('needs {cli} signed in. Set it up once:', { cli: info.tools.cli }) : t('needs {cli}. Set it up once:', { cli: info.tools.cli })),
+          h('div', { class: 'dim' }, h('b', null, t('Create now')), ' ', isBb ? t('needs your Bitbucket user name and an API token saved in Git. Set it up once:') : info.tools.installed ? t('needs {cli} signed in. Set it up once:', { cli: info.tools.cli }) : t('needs {cli}. Set it up once:', { cli: info.tools.cli })),
           h(
             'div',
             { class: 'mr-steps' },
+            isBb && h('button', { type: 'button', class: 'btn sm', onClick: () => openLink('https://id.atlassian.com/manage-profile/security/api-tokens') }, icon('open', 12), t('Create an API token')),
             !info.tools.installed && info.tools.canInstall && h('button', { type: 'button', class: 'btn sm', onClick: () => setup(isGh ? 'gh-install' : 'glab-install') }, icon('download', 12), t('1. Install {cli}', { cli: info.tools.cli })),
-            h('button', { type: 'button', class: 'btn sm', disabled: !info.tools.installed, onClick: () => setup(isGh ? 'gh-login' : 'glab-login') }, icon('user', 12), info.tools.installed ? t('Sign in to {service}', { service }) : t('2. Sign in to {service}', { service })),
+            h('button', { type: 'button', class: 'btn sm', disabled: !info.tools.installed, onClick: () => setup(isGh ? 'gh-login' : isBb ? 'bb-login' : 'glab-login') }, icon('user', 12), isBb ? t('Save it in Git') : info.tools.installed ? t('Sign in to {service}', { service }) : t('2. Sign in to {service}', { service })),
             h('button', { type: 'button', class: 'btn sm', onClick: recheck }, icon('refresh', 12), t('Check again'))
           )
         )
@@ -6166,7 +6170,7 @@ async function mergeRequestDialog(target, source, swapped) {
     linkBtn.disabled = createBtn.disabled = true
     clear(btn).append(h('span', { class: 'spinner' }), info.needsPush ? t('Pushing…') : web ? t('Opening…') : t('Creating…'))
     try {
-      const who = { assignees: assignees.value(), reviewers: reviewers.value(), ...(!isGh ? { removeSource: removeSource.checked, squash: squash.checked } : {}) }
+      const who = isBb ? { removeSource: removeSource.checked } : { assignees: assignees.value(), reviewers: reviewers.value(), ...(!isGh ? { removeSource: removeSource.checked, squash: squash.checked } : {}) }
       store.set(peopleKey, { reviewers: who.reviewers, assignMe: who.assignees.length > 0 })
       const r = await request('mr.create', { repo, target: info.target, source: info.source, title: title.value, body: body.value, draft: draft.checked, web, ...who }, 120000)
       if (r.warning) toast(r.warning, 'error', 8000)
@@ -6248,7 +6252,7 @@ async function mergeRequestDialog(target, source, swapped) {
       aiWrap(title)
     ),
     h('div', { class: 'field' }, h('label', null, t('Description')), aiWrap(body)),
-    h('div', { class: 'mr-people' }, peopleNote, h('div', { class: 'field' }, h('label', { class: 'row' }, t('Assignees'), h('span', { class: 'grow' }), assignees.meBtn), assignees.el), h('div', { class: 'field' }, h('label', { class: 'row' }, isGh ? t('Reviewers (Create now only)') : t('Reviewers'), h('span', { class: 'grow' }), reviewers.meBtn), reviewers.el)),
+    !isBb && h('div', { class: 'mr-people' }, peopleNote, h('div', { class: 'field' }, h('label', { class: 'row' }, t('Assignees'), h('span', { class: 'grow' }), assignees.meBtn), assignees.el), h('div', { class: 'field' }, h('label', { class: 'row' }, isGh ? t('Reviewers (Create now only)') : t('Reviewers'), h('span', { class: 'grow' }), reviewers.meBtn), reviewers.el)),
     gitlabOpts,
     h('label', { class: 'check' }, draft, t('Draft (Create now only)')),
     note,
@@ -6462,12 +6466,14 @@ async function viewReviews() {
         'div',
         { class: 'card setup-card' },
         h('div', { class: 'row' }, icon('globe', 14), h('strong', null, t('Connect {host}', { host: p.host }))),
-        h('div', { class: 'dim' }, p.provider === 'github' ? t('See and approve its pull requests here. Needs {cli}, set up once.', { cli: p.cli }) : t('See and approve its merge requests here. Needs {cli}, set up once.', { cli: p.cli })),
+        h('div', { class: 'dim' }, p.provider === 'bitbucket' ? t('See and approve its pull requests here, with the login Git keeps for {host}: create a Bitbucket API token (repositories and pull requests), then save your Bitbucket user name and the token in Git once.', { host: p.host }) : p.provider === 'github' ? t('See and approve its pull requests here. Needs {cli}, set up once.', { cli: p.cli }) : t('See and approve its merge requests here. Needs {cli}, set up once.', { cli: p.cli })),
         h(
           'div',
           { class: 'actions-wrap' },
-          !p.installed && p.canInstall && h('button', { class: 'btn sm', onClick: step(`${p.cli}-install`) }, icon('download', 12), t('1. Install {cli}', { cli: p.cli })),
-          h('button', { class: 'btn sm', disabled: !p.installed, onClick: step(`${p.cli}-login`) }, icon('user', 12), p.installed ? t('Sign in') : t('2. Sign in')),
+          p.provider === 'bitbucket' && h('button', { class: 'btn sm', onClick: () => openLink('https://id.atlassian.com/manage-profile/security/api-tokens') }, icon('open', 12), t('Create an API token')),
+          p.provider === 'bitbucket' && h('button', { class: 'btn sm', onClick: step('bb-login') }, icon('user', 12), t('Save it in Git')),
+          p.provider !== 'bitbucket' && !p.installed && p.canInstall && h('button', { class: 'btn sm', onClick: step(`${p.cli}-install`) }, icon('download', 12), t('1. Install {cli}', { cli: p.cli })),
+          p.provider !== 'bitbucket' && h('button', { class: 'btn sm', disabled: !p.installed, onClick: step(`${p.cli}-login`) }, icon('user', 12), p.installed ? t('Sign in') : t('2. Sign in')),
           h('button', { class: 'btn sm', onClick: async () => (await loadReviews(true).catch((e) => toast(e.message, 'error')), renderView({ force: true })) }, icon('refresh', 12), t('Check again'))
         )
       )
@@ -6625,7 +6631,7 @@ async function runReviewActions(list, action, root) {
   if (failed.length) toast(failed.join('\n'), 'error', 9000)
   await refreshReviewsAfterAction()
 }
-const mrNounShort = (it) => (it.provider === 'github' ? t('pull request') : t('merge request'))
+const mrNounShort = (it) => (it.provider === 'gitlab' ? t('merge request') : t('pull request'))
 
 /* ---- the merge queue: merges run in the worker, one at a time per project; rows show where each is ---- */
 state.mergeQueue = new Map() // url -> { state, note, position, error }
@@ -6855,7 +6861,7 @@ function moreMergedFooter(data, extra, filtering) {
 
 function reviewRow(it, { onSelect, filter, showRepo = filter === 'all' } = {}) {
   const open = () => openLink(it.url)
-  const noun = it.provider === 'github' ? t('pull request') : t('merge request')
+  const noun = it.provider === 'gitlab' ? t('merge request') : t('pull request')
   const show = () => reviewDetailSheet(it)
   const check = h('input', { type: 'checkbox', class: 'rv-check', 'aria-label': t('Select {ref}', { ref: mrRef(it) }), onClick: (e) => e.stopPropagation() })
   check.checked = state.rvSel.has(it.url)
@@ -6915,7 +6921,7 @@ function reviewRow(it, { onSelect, filter, showRepo = filter === 'all' } = {}) {
       h(
         'div',
         { class: 'review-meta' },
-        h('span', { class: 'mono' }, `${it.repo} ${it.provider === 'github' ? '#' : '!'}${it.number}`),
+        h('span', { class: 'mono' }, `${it.repo} ${it.provider === 'gitlab' ? '!' : '#'}${it.number}`),
         ` · ${it.author} · ${it.state === 'merged' && it.mergedAt ? t('merged {ago}', { ago: ago(it.mergedAt) }) : ago(it.updated)}`,
         it.source && [' · ', h('span', { class: 'mono' }, `${it.source} → ${it.target}`)]
       )
@@ -6964,7 +6970,7 @@ async function actOnReview(it, action, body, btn) {
 /** AI review of a pull/merge request: generate, edit, then post as comment, request changes or approve. */
 async function aiReviewModal(it) {
   closeOverlays()
-  const noun = it.provider === 'github' ? t('pull request') : t('merge request')
+  const noun = it.provider === 'gitlab' ? t('merge request') : t('pull request')
   const prefs = store.get('aiReviewPrefs', { instructions: '' })
   let agents = [
     { id: 'claude', name: 'Claude Code', available: true },
@@ -7041,7 +7047,7 @@ async function aiReviewModal(it) {
     const text = result.value.trim()
     if (!text) return
     const label = { approve: t('Approve'), changes: t('Request changes'), comment: t('Comment') }[action]
-    if (!(await confirmBox({ approve: t('Approve with this review?'), changes: t('Request changes with this review?'), comment: t('Comment with this review?') }[action], `${it.repo} ${it.provider === 'github' ? '#' : '!'}${it.number}\n` + t('The review is posted on {host} under your name.', { host: it.host }), label, action === 'changes'))) return
+    if (!(await confirmBox({ approve: t('Approve with this review?'), changes: t('Request changes with this review?'), comment: t('Comment with this review?') }[action], `${it.repo} ${it.provider === 'gitlab' ? '!' : '#'}${it.number}\n` + t('The review is posted on {host} under your name.', { host: it.host }), label, action === 'changes'))) return
     const b = postBtns[action]
     b.disabled = true
     if (await actOnReview(it, action, text)) close()
@@ -7057,7 +7063,7 @@ async function aiReviewModal(it) {
   const box = h(
     'div',
     { class: 'dialog ai-dialog ai-review-dialog', role: 'dialog' },
-    h('div', { class: 'ai-title' }, h('div', null, h('h3', null, t('AI review')), h('p', null, `${it.repo} ${it.provider === 'github' ? '#' : '!'}${it.number} · ${it.title}`))),
+    h('div', { class: 'ai-title' }, h('div', null, h('h3', null, t('AI review')), h('p', null, `${it.repo} ${it.provider === 'gitlab' ? '!' : '#'}${it.number} · ${it.title}`))),
     h('div', { class: 'ai-row' }, h('div', { class: 'field grow' }, h('label', null, t('Agent')), agentSel)),
     h('div', { class: 'field' }, h('label', null, t('Instructions')), instructions),
     h('div', { class: 'field' }, h('div', { class: 'ai-msg-head' }, h('label', { class: 'row' }, t('Review'), verdictEl), genBtn), aiWrap(result)),
@@ -7072,10 +7078,10 @@ async function aiReviewModal(it) {
 }
 
 async function reviewDialog(it, preset = 'approve') {
-  const noun = it.provider === 'github' ? t('pull request') : t('merge request')
+  const noun = it.provider === 'gitlab' ? t('merge request') : t('pull request')
   const r = await dialog({
     title: t('Review: {title}', { title: it.title }),
-    message: t('{ref} by {author}', { ref: `${it.repo} ${it.provider === 'github' ? '#' : '!'}${it.number}`, author: it.author }),
+    message: t('{ref} by {author}', { ref: `${it.repo} ${it.provider === 'gitlab' ? '!' : '#'}${it.number}`, author: it.author }),
     fields: [
       {
         key: 'action',
@@ -7164,8 +7170,8 @@ function mdRender(src) {
   return el
 }
 
-const mrNoun = (it) => (it.provider === 'github' ? t('pull request') : t('merge request'))
-const mrRef = (it) => `${it.provider === 'github' ? '#' : '!'}${it.number}`
+const mrNoun = (it) => (it.provider === 'gitlab' ? t('merge request') : t('pull request'))
+const mrRef = (it) => `${it.provider === 'gitlab' ? '!' : '#'}${it.number}`
 const isOwnMr = (it) => it.roles?.length > 0 && it.roles.every((r) => r === 'mine' || r === 'repo') && it.roles.includes('mine')
 const initials = (n) => (String(n || '?').replace(/[^A-Za-z0-9]/g, '')[0] || '?').toUpperCase()
 
@@ -7220,8 +7226,8 @@ async function reviewDetailSheet(it, tab = 'overview') {
     // Changes and Pipeline open their own page over this one (Back returns here)
     if (id === 'changes') return reviewDiffSheet(it)
     if (id === 'pipeline') {
-      if (localRepo && d.headSha) return openPipelines({ sha: d.headSha, branch: d.source })
-      return openLink(it.provider === 'github' ? `${d.url}/checks` : `${d.url}/pipelines`)
+      if (localRepo && d.headSha && it.provider !== 'bitbucket') return openPipelines({ sha: d.headSha, branch: d.source })
+      return openLink(it.provider === 'github' ? `${d.url}/checks` : it.provider === 'bitbucket' ? d.url : `${d.url}/pipelines`)
     }
     drawTabs(id)
     clear(pane).append(id === 'commits' ? commitsPane() : overviewPane())
@@ -7377,7 +7383,7 @@ async function reviewDetailSheet(it, tab = 'overview') {
             title: localRepo ? t('Show this commit') : t('Open this commit in the browser'),
             onClick: async () => {
               if (localRepo && (await call('commitShow', { hash: c.sha }).then(() => true, () => false))) return openCommit(c.sha)
-              openLink(it.provider === 'github' ? `${d.url}/commits/${c.sha}` : `${d.url}/diffs?commit_id=${c.sha}`)
+              openLink(it.provider === 'github' ? `${d.url}/commits/${c.sha}` : it.provider === 'bitbucket' ? `${d.url.replace(/\/pull-requests\/\d+\/?$/, '')}/commits/${c.sha}` : `${d.url}/diffs?commit_id=${c.sha}`)
             }
           },
           h('span', { class: 'mono dim' }, c.sha.slice(0, 7)),
@@ -8474,7 +8480,7 @@ function nextConflict(done) {
 
 /** A pull/merge request's diff; click a line to comment on it. */
 async function reviewDiffSheet(it) {
-  openSheet(`${it.repo} ${it.provider === 'github' ? '#' : '!'}${it.number} · ${it.title}`, h('div', { class: 'inline-skeleton', style: { margin: '12px' } }, h('span'), h('span'), h('span')), [
+  openSheet(`${it.repo} ${it.provider === 'gitlab' ? '!' : '#'}${it.number} · ${it.title}`, h('div', { class: 'inline-skeleton', style: { margin: '12px' } }, h('span'), h('span'), h('span')), [
     h('button', { class: 'btn sm', onClick: () => aiReviewModal(it) }, icon('wand', 12), t('AI review')),
     h('button', { class: 'btn sm primary', onClick: () => reviewDialog(it) }, icon('edit', 12), t('Review'))
   ])

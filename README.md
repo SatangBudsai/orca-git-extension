@@ -1,7 +1,7 @@
 # Git Control for Orca
 
 A Git client inside Orca: the commit graph, commits, branches, stashes, merge requests and pipelines for
-GitHub and GitLab, in one editor tab and a sidebar panel, for projects on your computer and on your SSH
+GitHub and GitLab (and pull requests on Bitbucket Cloud), in one editor tab and a sidebar panel, for projects on your computer and on your SSH
 servers. It runs your installed `git` and signs in with
 the Git login you already have (or `gh` / `glab` when they are set up), so there are no tokens to create.
 
@@ -78,6 +78,20 @@ description are filled in the way GitLab does it, assignees and reviewers come f
 **Create now** makes it with your Git login, pushing the branch first when needed.
 
 ![The new merge request dialog with assignees and reviewers](assets/screenshots/new-merge-request.png)
+
+### Bitbucket Cloud
+Repositories on `bitbucket.org` show their pull requests in **MR / PR** too: the open ones of the Bitbucket
+repositories open in Orca (with Review requested and Opened by me), the ones you opened anywhere, and in **All**
+this repository's merged ones. Read one, approve or take the approval back, comment, request changes, merge (merge
+commit or squash, closing the source branch if you like) and open a pull request, with its CI from the builds
+that report to Bitbucket (Bitbucket Pipelines included). Bitbucket Pipelines are not in the Pipelines tab yet.
+
+Bitbucket has no CLI like `gh` or `glab`, so Git Control uses the login Git keeps for `bitbucket.org`. If you
+clone over HTTPS that is already there; with SSH, create an [API token](https://id.atlassian.com/manage-profile/security/api-tokens)
+with access to repositories and pull requests, then **Save it in Git** (on the Connect card) stores your Bitbucket
+user name and the token. Bitbucket's API takes an API token only with your Atlassian email: Git Control uses your
+Git `user.email`, or `git config --global gitcontrol.bitbucketEmail you@example.com` when that differs. A
+self-hosted Bitbucket (Server / Data Center) is not supported.
 
 ### Merge and resolve conflicts
 Right-click any branch or tag label in the graph (or a tag in the sidebar): the first item merges that one into
@@ -196,7 +210,7 @@ Each language is one file, `panel/locales/<language>.json`, mapping the English 
 
 Git Control runs `git`, and `gh` / `glab` when present, on your machine (and `git` on your SSH hosts,
 over your own ssh). It talks only to your own
-GitHub or GitLab hosts, with the login Git already uses; the token is never shown, logged or sent
+GitHub, GitLab or Bitbucket hosts (`api.bitbucket.org` for Bitbucket Cloud), with the login Git already uses; the token is never shown, logged or sent
 anywhere else.
 
 Merge request descriptions, comments and AI answers are treated as untrusted: their Markdown becomes
@@ -211,7 +225,7 @@ orca plugin dev reload .     # loads into Orca; asks you to approve on first loa
 node tools/build.mjs         # after editing panel/: builds panel/graph.html (tab) and panel/sidebar.html (panel)
 ```
 
-Tests run against throwaway repositories and a fake GitHub/GitLab API, never your accounts or config
+Tests run against throwaway repositories and a fake GitHub/GitLab/Bitbucket API, never your accounts or config
 (`cd tests && npm install` first; they need Google Chrome, found where Windows, macOS or Linux put it, or set
 `CHROME=/path/to/chrome`). They run on Windows, macOS and Linux: the stand-ins for `ssh`, `orca` and the AI CLIs are Node
 scripts, and on Windows the SSH tests use the `sh` that comes with Git (symlink checks are skipped without Developer Mode):
@@ -220,7 +234,7 @@ scripts, and on Windows the SSH tests use the `sh` that comes with Git (symlink 
 node e2e.mjs <plugin folder> <shots folder>       # the full tab, clicked through like a person
 node mobile.mjs <plugin folder> <shots folder>    # phone size, loaded the way Orca's web client loads it
 node sidebar.mjs <plugin folder> <shots folder>   # the right-sidebar panel at several widths
-node worker-api.mjs github|gitlab                 # merge requests, reviews and CI through the Git login
+node worker-api.mjs github|gitlab|bitbucket       # merge requests, reviews and CI through the Git login
 node merge-queue.mjs                              # Approve & merge on several: one at a time per project
 node statusbar.mjs                                # the status bar items: Git never disappears, Repos counts
 node github-ratelimit.mjs                         # GitHub searches shared, paused at the rate limit
@@ -236,7 +250,7 @@ node promo.mjs <plugin folder>                    # marketplace posters from ass
 
 ```
 orca-plugin.json   manifest (trusted-worker: the worker runs git)
-worker/main.mjs    git, GitHub and GitLab operations, exposed to the panel
+worker/main.mjs    git, GitHub, GitLab and Bitbucket Cloud operations, exposed to the panel
 worker/hosts.mjs   where git runs: this machine, or an SSH host (ssh://host/path locators)
 panel/             tab.html (editor tab), index.html (sidebar panel), style.css, app.js
 tools/build.mjs    packs each page into one self-contained file

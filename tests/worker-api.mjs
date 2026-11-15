@@ -1,4 +1,4 @@
-// Worker test against a fake GitHub/GitLab API: node tests/worker-api.mjs github|gitlab
+// Worker test against a fake GitHub/GitLab/Bitbucket Cloud API: node tests/worker-api.mjs github|gitlab|bitbucket
 import http from 'node:http'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -27,6 +27,7 @@ const ok = (cond, name, extra = '') => {
 // ---- fake server ----
 const log = []
 let deny = false
+let emailOnly = false // bitbucket: an Atlassian API token, taken only with the account's email
 const server = http.createServer((rq, rs) => {
   let body = ''
   rq.on('data', (d) => (body += d))
@@ -37,7 +38,8 @@ const server = http.createServer((rq, rs) => {
       rs.writeHead(code, { 'Content-Type': type })
       rs.end(typeof obj === 'string' ? obj : JSON.stringify(obj))
     }
-    const authed = KIND === 'github' ? e.auth === 'Bearer TESTTOKEN' : e.pt === 'TESTTOKEN' // gitlab: only PRIVATE-TOKEN works (tests the fallback)
+    // gitlab: only PRIVATE-TOKEN works (tests the fallback); bitbucket: only Basic user:token (an app password)
+    const authed = KIND === 'github' ? e.auth === 'Bearer TESTTOKEN' : KIND === 'bitbucket' ? e.auth === 'Basic ' + Buffer.from((emailOnly ? 't@e' : 'u') + ':TESTTOKEN').toString('base64') : e.pt === 'TESTTOKEN'
     if (deny || !authed) return send(401, { message: 'Bad credentials' })
     const u = rq.url
     const B = `http://127.0.0.1:${port}`
@@ -59,6 +61,29 @@ const server = http.createServer((rq, rs) => {
       if (e.method === 'POST' && u === '/repos/o/r/pulls/7/comments') return send(201, { id: 2 })
       if (/\/commits\/\w+\/check-runs$/.test(u)) return send(200, { check_runs: [{ conclusion: 'success' }] })
       if (/\/commits\/\w+\/status$/.test(u)) return send(200, { statuses: [] })
+    } else if (KIND === 'bitbucket') {
+      const P = '/2.0'
+      const R = `${P}/repositories/ws/repo`
+      const meU = { uuid: '{me-1}', nickname: 'me', display_name: 'Me' }
+      const html = `${B}/ws/repo/pull-requests/5`
+      const pr = { id: 5, title: 'PR', state: 'OPEN', description: 'D', author: meU, reviewers: [meU, { uuid: '{bob-1}', nickname: 'bob' }], participants: [{ user: { uuid: '{ann-1}', nickname: 'ann' }, role: 'PARTICIPANT', approved: true }, { user: { uuid: '{bob-1}', nickname: 'bob' }, role: 'REVIEWER', approved: false }], source: { branch: { name: 'feature' }, commit: { hash: 'abc123' } }, destination: { branch: { name: 'main' }, repository: { full_name: 'ws/repo' } }, links: { html: { href: html } }, updated_on: '2026-01-01T00:00:00Z', created_on: '2026-01-01T00:00:00Z', comment_count: 1, close_source_branch: false }
+      const path0 = u.split('?')[0]
+      if (e.method === 'POST' && u === `${R}/pullrequests`) return send(201, { id: 5, links: { html: { href: html } } })
+      if (u === `${P}/user`) return send(200, meU)
+      if (path0 === `${R}/pullrequests` || path0 === `${P}/pullrequests/${encodeURIComponent('{me-1}')}`) return send(200, { values: /state=MERGED/.test(u) ? [] : [pr] })
+      if (path0.startsWith(`${P}/user/permissions/repositories`)) return send(200, { values: [{ permission: 'write' }] })
+      if (u === `${R}/pullrequests/5`) return send(200, pr)
+      if (path0 === `${R}/pullrequests/5/statuses`) return send(200, { values: [{ state: 'SUCCESSFUL' }] })
+      if (e.method === 'POST' && u === `${R}/pullrequests/5/approve`) return send(200, { approved: true })
+      if (e.method === 'DELETE' && u === `${R}/pullrequests/5/approve`) return send(204, '')
+      if (e.method === 'POST' && u === `${R}/pullrequests/5/request-changes`) return send(200, {})
+      if (e.method === 'POST' && u === `${R}/pullrequests/5/comments`) return send(201, { id: 9 })
+      if (e.method === 'POST' && u === `${R}/pullrequests/5/merge`) return send(200, { ...pr, state: 'MERGED' })
+      if (path0 === `${R}/pullrequests/5/comments`) return send(200, { values: [{ content: { raw: 'Nice' }, user: { nickname: 'bob' }, created_on: '2026-01-01T01:00:00Z', inline: { path: 'b.txt', to: 1 } }, { deleted: true, content: { raw: 'gone' }, user: { nickname: 'bob' } }] })
+      if (path0 === `${R}/pullrequests/5/commits`) return send(200, { values: [{ hash: 'c0ffee1234', message: 'Do it\n\nbody', author: { raw: 'Me <m@e>' }, date: '2026-01-01T00:00:00Z' }] })
+      if (path0 === `${R}/pullrequests/5/diffstat`) return send(200, { values: [{ lines_added: 1, lines_removed: 0 }] })
+      if (u === `${R}/pullrequests/5/diff`) return send(200, 'diff --git a/b.txt b/b.txt\n', 'text/plain')
+      if (/\/commit\/\w+\/statuses/.test(path0)) return send(200, { values: [{ state: 'FAILED' }] })
     } else {
       const P = '/api/v4'
       const mr = { web_url: `${B}/group/sub/proj/-/merge_requests/3`, iid: 3, project_id: 42, title: 'MR', references: { full: 'group/sub/proj!3' }, author: { username: 'me' }, updated_at: '2026-01-01T00:00:00Z' }
@@ -82,7 +107,7 @@ const server = http.createServer((rq, rs) => {
 })
 await new Promise((r) => server.listen(0, '127.0.0.1', r))
 const port = server.address().port
-process.env.GITX_API_BASE = KIND === 'github' ? `http://127.0.0.1:${port}` : `http://127.0.0.1:${port}/api/v4`
+process.env.GITX_API_BASE = KIND === 'github' ? `http://127.0.0.1:${port}` : KIND === 'bitbucket' ? `http://127.0.0.1:${port}/2.0` : `http://127.0.0.1:${port}/api/v4`
 
 // ---- repo: pushed to a local bare remote, then the remote URL points at the fake server ----
 const bare = path.join(W, 'remote.git')
@@ -99,7 +124,7 @@ fs.writeFileSync(path.join(repo, 'b.txt'), 'b\n')
 g(repo, 'add', '.')
 g(repo, 'commit', '-m', 'Add b')
 g(repo, 'push', '-u', 'origin', 'feature')
-const remotePath = KIND === 'github' ? 'o/r' : 'group/sub/proj'
+const remotePath = { github: 'o/r', bitbucket: 'ws/repo' }[KIND] || 'group/sub/proj'
 g(repo, 'remote', 'set-url', 'origin', `http://127.0.0.1:${port}/${remotePath}.git`)
 
 // ---- worker with a fake Orca ----
@@ -118,15 +143,19 @@ try {
   ok(!info.needsPush, 'no push needed')
   // web fallback
   const web = await call('mr.create', { repo, target: 'main', title: 'Hello', body: 'Body', web: true })
-  ok(KIND === 'github' ? web.url.includes(`/${remotePath}/compare/main...feature?`) : web.url.includes(`/${remotePath}/-/merge_requests/new?`), 'web url', web.url)
+  ok(KIND === 'github' ? web.url.includes(`/${remotePath}/compare/main...feature?`) : KIND === 'bitbucket' ? web.url.endsWith(`/${remotePath}/pull-requests/new?source=feature&dest=main`) : web.url.includes(`/${remotePath}/-/merge_requests/new?`), 'web url', web.url)
   // create via git login
   log.length = 0
   const cr = await call('mr.create', { repo, target: 'main', title: 'Hello', body: 'Body', draft: true })
   const post = log.find((x) => x.method === 'POST')
-  ok(cr.created && cr.number === (KIND === 'github' ? 7 : 3) && cr.via === 'git' && /^http/.test(cr.url), 'create result', JSON.stringify(cr))
+  ok(cr.created && cr.number === ({ github: 7, bitbucket: 5 }[KIND] ?? 3) && cr.via === 'git' && /^http/.test(cr.url), 'create result', JSON.stringify(cr))
   if (KIND === 'github') {
     ok(post.auth === 'Bearer TESTTOKEN' && post.ua === 'git-control' && post.accept === 'application/vnd.github+json', 'github headers')
     ok(JSON.stringify(post.body) === JSON.stringify({ title: 'Hello', body: 'Body', head: 'feature', base: 'main', draft: true }), 'github body', JSON.stringify(post.body))
+  } else if (KIND === 'bitbucket') {
+    const posts = log.filter((x) => x.method === 'POST')
+    ok(posts.length === 1 && /^Basic /.test(posts[0].auth || ''), 'bitbucket: Basic user:token, one request', JSON.stringify(posts))
+    ok(JSON.stringify(post.body) === JSON.stringify({ title: 'Hello', description: 'Body', source: { branch: { name: 'feature' } }, destination: { branch: { name: 'main' } }, draft: true }), 'bitbucket body', JSON.stringify(post.body))
   } else {
     const posts = log.filter((x) => x.method === 'POST')
     // earlier calls found that this host takes PRIVATE-TOKEN (Bearer was refused once): sent that way at once
@@ -144,7 +173,11 @@ try {
   const prov = inbox.providers.find((p) => p.host === `127.0.0.1:${port}`)
   ok(prov && prov.via === 'git' && prov.signedIn, 'inbox provider via git', JSON.stringify(inbox.providers))
   const it = inbox.items.find((x) => x.host === `127.0.0.1:${port}`)
-  ok(it && ['review', 'assigned', 'mine', 'repo'].every((r) => it.roles.includes(r)), 'inbox roles', JSON.stringify(inbox))
+  ok(it && (KIND === 'bitbucket' ? ['review', 'mine', 'repo'] : ['review', 'assigned', 'mine', 'repo']).every((r) => it.roles.includes(r)), 'inbox roles', JSON.stringify(inbox))
+  if (KIND === 'bitbucket') {
+    ok(it.provider === 'bitbucket' && it.number === 5 && it.repo === 'ws/repo' && it.source === 'feature' && it.target === 'main' && it.author === 'me', 'bitbucket item fields', JSON.stringify(it))
+    ok(it.approvedCount === 1 && it.myApproved === false && it.canMerge === true, 'bitbucket approvals and permission', JSON.stringify([it.approvedCount, it.myApproved, it.canMerge]))
+  }
   ok(it?.ci === 'passed', 'inbox item CI', it?.ci)
   ok(it?.me === 'me' && typeof it.approvedCount === 'number', 'inbox item knows me and approvals', JSON.stringify([it?.me, it?.approvedCount, it?.myApproved]))
   // review actions
@@ -153,6 +186,11 @@ try {
     const r = await call('reviews.act', { ...it, action, body: action === 'approve' ? '' : 'Looks off' }).catch((e) => e)
     ok(r?.ok, `review ${action}`, r?.message)
     if (KIND === 'github') ok(log.find((x) => x.url.endsWith('/reviews'))?.body?.event === { approve: 'APPROVE', changes: 'REQUEST_CHANGES', comment: 'COMMENT' }[action], `github ${action} event`)
+    if (KIND === 'bitbucket') {
+      const sent = log.filter((x) => x.method !== 'GET').map((x) => `${x.method} ${x.url.replace(/^.*\/pullrequests\/5/, '')}`)
+      const want = { approve: ['POST /approve'], changes: ['POST /comments', 'DELETE /approve', 'POST /request-changes'], comment: ['POST /comments'] }[action]
+      ok(JSON.stringify(sent) === JSON.stringify(want), `bitbucket ${action} calls`, JSON.stringify(sent))
+    }
   }
   // merge with options; GitLab: revoke approval too
   log.length = 0
@@ -164,6 +202,12 @@ try {
     ok(log.some((x) => x.method === 'DELETE' && x.url === '/repos/o/r/git/refs/heads/feature'), 'github deletes the head branch')
     const un = await call('reviews.act', { ...it, action: 'unapprove' }).then(() => null, (e) => e)
     ok(un && /GitHub does not let you take back/.test(un.message), 'github revoke explains')
+  } else if (KIND === 'bitbucket') {
+    const mpost = log.find((x) => x.method === 'POST' && x.url.endsWith('/merge'))
+    ok(JSON.stringify(mpost?.body) === JSON.stringify({ merge_strategy: 'squash', close_source_branch: true }), 'bitbucket merge request', JSON.stringify(mpost))
+    log.length = 0
+    const un = await call('reviews.act', { ...it, action: 'unapprove' }).catch((e) => e)
+    ok(un?.ok && log.some((x) => x.method === 'DELETE' && x.url.endsWith('/pullrequests/5/approve')), 'bitbucket takes back an approval', un?.message)
   } else {
     // the merge request's own settings are made to match first, then it is merged with them
     const upd = log.find((x) => x.method === 'PUT' && x.url.endsWith('/merge_requests/3'))
@@ -187,6 +231,10 @@ try {
   if (KIND === 'github') {
     ok(!det.reviewers.some((x) => x.name === 'bob'), 'a comment-only review is not a reviewer state', JSON.stringify(det.reviewers))
     ok(det.comments.some((c) => c.file === 'x.js' && c.line === 4) && det.comments.some((c) => c.kind === 'changes'), 'github comments (line + review)', JSON.stringify(det.comments))
+  } else if (KIND === 'bitbucket') {
+    ok(det.reviewers.find((x) => x.name === 'bob')?.state === 'pending' && det.body === 'D' && det.headSha === 'abc123' && det.stats.add === 1, 'bitbucket waiting reviewer, body, head, stats', JSON.stringify([det.reviewers, det.body, det.headSha, det.stats]))
+    ok(det.comments.length === 1 && det.comments[0].file === 'b.txt' && det.comments[0].line === 1, 'bitbucket comments without deleted ones', JSON.stringify(det.comments))
+    ok(det.commits[0].author === 'Me', 'bitbucket commit author from raw', JSON.stringify(det.commits))
   } else {
     ok(det.approvals.required === 1 && det.reviewers.find((x) => x.name === 'bob')?.state === 'pending', 'gitlab approvals and waiting reviewer', JSON.stringify([det.approvals, det.reviewers]))
     ok(det.comments.length === 1 && det.comments[0].file === 'b.txt', 'gitlab notes without system notes', JSON.stringify(det.comments))
@@ -199,14 +247,33 @@ try {
   ok(lc?.ok, 'line comment', lc?.message)
   const lcPost = log.find((x) => x.method === 'POST')
   if (KIND === 'github') ok(lcPost?.body?.commit_id === 'abc123' && lcPost.body.path === 'b.txt' && lcPost.body.side === 'RIGHT', 'github line comment body', JSON.stringify(lcPost))
+  else if (KIND === 'bitbucket') ok(JSON.stringify(lcPost?.body) === JSON.stringify({ content: { raw: 'nit' }, inline: { path: 'b.txt', to: 1 } }), 'bitbucket line comment body', JSON.stringify(lcPost))
   else ok(lcPost?.body?.position?.old_path === 'a.txt' && lcPost.body.position.new_line === 1, 'gitlab renamed old_path', JSON.stringify(lcPost))
+  if (KIND === 'bitbucket') {
+    // an Atlassian API token: Git signs in with the user name, the API only with the email (Git's user.email here)
+    emailOnly = true
+    const viaEmail = 'Basic ' + Buffer.from('t@e:TESTTOKEN').toString('base64')
+    log.length = 0
+    const d1 = await call('reviews.detail', it).catch((e) => e)
+    ok(d1?.title === 'PR' && log.some((x) => x.auth === viaEmail), 'bitbucket: API token with the Git email', d1?.message || JSON.stringify(log.map((x) => x.auth)))
+    log.length = 0
+    await call('reviews.detail', it)
+    ok(log.length && log.every((x) => x.auth === viaEmail), 'bitbucket: the email way is remembered (no refused requests first)', JSON.stringify(log.map((x) => x.auth)))
+    emailOnly = false
+  }
   // CI for the repo
   const ci = await op('ciStatus', {})
   ok(ci.state === (KIND === 'github' ? 'passed' : 'failed'), 'ciStatus', JSON.stringify(ci))
+  if (KIND === 'bitbucket') {
+    const pe = await op('pipelines', {}).then(() => null, (e) => e)
+    ok(pe && /Bitbucket Pipelines/.test(pe.message), 'bitbucket pipelines explain', pe?.message)
+  }
   // SSH / enterprise remote parsing
-  g(repo, 'remote', 'set-url', 'origin', KIND === 'github' ? 'ssh://git@ghe.corp:2222/o/r.git' : 'git@gitlab.corp:group/sub/proj.git')
+  if (KIND === 'bitbucket') delete process.env.GITX_API_KIND // bitbucket.org is recognised by its name
+  g(repo, 'remote', 'set-url', 'origin', { github: 'ssh://git@ghe.corp:2222/o/r.git', bitbucket: 'git@bitbucket.org:ws/repo.git' }[KIND] || 'git@gitlab.corp:group/sub/proj.git')
   const i2 = await call('mr.info', { repo, target: 'main' })
-  ok(i2.protocol === 'https' && i2.host === (KIND === 'github' ? 'ghe.corp' : 'gitlab.corp') && i2.web === `https://${i2.host}/${remotePath}`, 'ssh → https host', JSON.stringify([i2.host, i2.web]))
+  ok(i2.protocol === 'https' && i2.host === ({ github: 'ghe.corp', bitbucket: 'bitbucket.org' }[KIND] || 'gitlab.corp') && i2.web === `https://${i2.host}/${remotePath}`, 'ssh → https host', JSON.stringify([i2.host, i2.web]))
+  if (KIND === 'bitbucket') ok(i2.kind === 'bitbucket' && i2.tools.cli && i2.tools.installed === true && i2.tools.canInstall === false, 'bitbucket.org detected, no CLI to install', JSON.stringify([i2.kind, i2.tools]))
   g(repo, 'remote', 'set-url', 'origin', `https://h.corp:8443/${remotePath}.git`)
   const i3 = await call('mr.info', { repo, target: 'main' })
   ok(i3.host === 'h.corp:8443' && i3.web === `https://h.corp:8443/${remotePath}`, 'https port kept', i3.host)
