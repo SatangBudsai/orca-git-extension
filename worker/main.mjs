@@ -1327,9 +1327,13 @@ function apiBase(where) {
 }
 
 const authStyle = new Map() // GitLab host → 'pat' | 'bearer': how its token is sent
+const bbHold = new Map() // Bitbucket host → when its rate limit lifts (ms)
 
 /** Call the GitHub/GitLab REST API with the saved Git login. Resolves the JSON (or text with `raw`). */
 async function forgeApi(where, method, apiPath, { body, accept, raw, cwd, total } = {}) {
+  // Bitbucket said "too many requests": every call waits until it lifts instead of making it worse
+  const hold = bbHold.get(where.host)
+  if (hold && hold > Date.now()) throw Object.assign(new GitError(`${where.host} rate limit reached (HTTP 429); it lifts at ${new Date(hold).toLocaleTimeString()}`), { status: 429, resetAt: hold })
   const cred = await gitCredential(where, cwd)
   if (!cred) throw new GitError(`There is no saved Git login for ${where.host}`)
   const send = (auth) =>
@@ -1366,8 +1370,9 @@ async function forgeApi(where, method, apiPath, { body, accept, raw, cwd, total 
   } catch {}
   // GitHub's rate limit (403 or 429): not a login problem; say when it lifts
   if ((res.status === 403 || res.status === 429) && (RATE_LIMIT.test(json?.message || '') || res.headers.get('x-ratelimit-remaining') === '0' || (res.status === 429 && where.kind === 'bitbucket'))) {
-    const reset = +res.headers.get('x-ratelimit-reset') * 1000 || (+res.headers.get('retry-after') ? Date.now() + +res.headers.get('retry-after') * 1000 : 0)
-    throw Object.assign(new GitError(`${where.host} rate limit reached${reset ? `; it lifts at ${new Date(reset).toLocaleTimeString()}` : ''}`), { status: res.status, resetAt: reset || null })
+    let reset = +res.headers.get('x-ratelimit-reset') * 1000 || (+res.headers.get('retry-after') ? Date.now() + +res.headers.get('retry-after') * 1000 : 0)
+    if (where.kind === 'bitbucket') bbHold.set(where.host, (reset ||= Date.now() + 60_000))
+    throw Object.assign(new GitError(`${where.host} rate limit reached (HTTP ${res.status})${reset ? `; it lifts at ${new Date(reset).toLocaleTimeString()}` : ''}`), { status: res.status, resetAt: reset || null })
   }
   if (res.status === 401 || res.status === 403) {
     if (res.status === 401) credCache.delete(`${where.protocol}://${where.host}`)
@@ -1602,9 +1607,29 @@ async function mrPeople(repo, { query = '' } = {}) {
   if (!via) return { people: [], me: null, via: null, kind: w.kind, defaults: {} }
   const q = String(query).slice(0, 60)
   if (w.kind === 'bitbucket') {
-    // its people are Atlassian accounts (uuids), picked on its own page: none to pick here
-    const me = await bitbucketUser(w, repo).catch(() => null)
-    return { people: [], me: me ? { id: me.uuid, username: bbWho(me), name: me.display_name || bbWho(me) } : null, via, kind: 'bitbucket', defaults: {} }
+    // its people are Atlassian accounts, by uuid: the repository's default reviewers (Bitbucket adds
+    // them only on its own form, so here they come pre-picked) and the workspace's members
+    const ws = w.path.split('/')[0]
+    const values = (u) => forgeApi(w, 'GET', u, { cwd: repo }).then((r) => (Array.isArray(r?.values) ? r.values : []), () => [])
+    const [me, defaults, members] = await Promise.all([
+      bitbucketUser(w, repo).catch(() => null),
+      values(`/repositories/${w.path}/effective-default-reviewers?pagelen=100`),
+      values(`/workspaces/${encodeURIComponent(ws)}/members?pagelen=100`)
+    ])
+    const person = (u) => u?.uuid && { id: u.uuid, username: bbWho(u), name: u.display_name || bbWho(u), avatar: u.links?.avatar?.href || '' }
+    const byId = new Map()
+    for (const u of [...defaults.map((d) => d.user), ...members.map((m) => m.user)]) {
+      const x = person(u)
+      if (x && !byId.has(x.id)) byId.set(x.id, x)
+    }
+    const people = [...byId.values()].filter((x) => !q || `${x.username} ${x.name}`.toLowerCase().includes(q.toLowerCase()))
+    return {
+      people,
+      me: me ? person(me) : null,
+      via,
+      kind: 'bitbucket',
+      defaults: { reviewers: defaults.map((d) => person(d.user)).filter((x) => x && x.id !== me?.uuid) }
+    }
   }
   if (w.kind === 'github') {
     const [list, me] = await Promise.all([
@@ -1631,15 +1656,16 @@ async function mrPeople(repo, { query = '' } = {}) {
   }
 }
 
-/** Assignees / reviewers from the panel: [{ id, username }], checked. */
+/** Assignees / reviewers from the panel: [{ id, username }], checked. Bitbucket's are by account uuid ({…}). */
+const BB_UUID = /^{[0-9a-f-]{1,64}}$/i
 function cleanPeople(list) {
   return (Array.isArray(list) ? list : [])
     .slice(0, 20)
-    .filter((p) => p && PERSON.test(String(p.username || '')) && Number.isInteger(+p.id))
-    .map((p) => ({ id: +p.id, username: String(p.username) }))
+    .filter((p) => p && (BB_UUID.test(String(p.id)) || (PERSON.test(String(p.username || '')) && Number.isInteger(+p.id))))
+    .map((p) => (BB_UUID.test(String(p.id)) ? { id: String(p.id), username: String(p.username || '').slice(0, 100) } : { id: +p.id, username: String(p.username) }))
 }
 
-// ---------- pipelines (GitHub Actions runs / GitLab pipelines) ----------
+// ---------- pipelines (GitHub Actions runs / GitLab pipelines / Bitbucket Pipelines) ----------
 
 const PIPE_STATE = (s, c) => {
   const v = String(c || s || '').toLowerCase()
@@ -1658,7 +1684,7 @@ async function pipeTarget(repo) {
   const w = await remoteWhere(repo, remote)
   if (!w) throw new GitError('Could not tell where the remote is hosted')
   const via = await viaFor(w, repo)
-  if (w.kind === 'bitbucket') throw new GitError('Bitbucket Pipelines are not shown here yet: open them on bitbucket.org')
+  if (!via && w.kind === 'bitbucket') throw new GitError(`Save a Bitbucket API token in Git first (MR / PR tab: Connect ${w.host})`)
   if (!via) throw new GitError(`Sign in to ${w.host} first: ${cliFor(w.kind)}, or a saved Git login with API access`)
   return { w, via }
 }
@@ -1688,6 +1714,7 @@ async function pipelines(repo, { branch, sha, all, light } = {}) {
   // all: every branch's recent runs (the Pipelines tab); otherwise one branch (the current one by default)
   const b = all ? null : branch ? req(branch, 'branch') : (await headInfo(repo)).branch
   const n = all ? 50 : 20
+  if (w.kind === 'bitbucket') return bitbucketPipelines(w, repo, { b, sha, n, details: all && !light })
   if (w.kind === 'github') {
     const q = sha ? `head_sha=${encodeURIComponent(sha)}` : b ? `branch=${encodeURIComponent(b)}` : ''
     const r = await forgeCall(w, via, 'GET', `/repos/${w.path}/actions/runs?per_page=${n}${q ? '&' + q : ''}`, null, repo)
@@ -1776,6 +1803,7 @@ async function pipelines(repo, { branch, sha, all, light } = {}) {
 /** Jobs of one pipeline, in stage order. */
 async function pipelineJobs(repo, { id }) {
   const { w, via } = await pipeTarget(repo)
+  if (w.kind === 'bitbucket') return bitbucketSteps(w, repo, id)
   id = pipeId(id)
   if (w.kind === 'github') {
     const r = await forgeCall(w, via, 'GET', `/repos/${w.path}/actions/runs/${id}/jobs?per_page=100`, null, repo)
@@ -1798,6 +1826,7 @@ async function pipelineJobs(repo, { id }) {
 /** The log of one job (last 400 KB), with ANSI colour codes removed. */
 async function jobLog(repo, { id }) {
   const { w, via } = await pipeTarget(repo)
+  if (w.kind === 'bitbucket') return bitbucketStepLog(w, repo, id)
   id = pipeId(id)
   const apiPath = w.kind === 'github' ? `/repos/${w.path}/actions/jobs/${id}/logs` : `/projects/${projectPath(w.path)}/jobs/${id}/trace`
   let text
@@ -1821,6 +1850,7 @@ async function jobLog(repo, { id }) {
 /** Retry / re-run failed / cancel a pipeline, or retry one job. */
 async function pipelineAct(repo, { id, action, job }) {
   const { w, via } = await pipeTarget(repo)
+  if (w.kind === 'bitbucket') return bitbucketPipelineAct(w, repo, id, action)
   const gh = w.kind === 'github'
   const pid = id != null ? pipeId(id) : null
   const jid = job != null ? pipeId(job) : null
@@ -1851,9 +1881,12 @@ async function githubAddPeople(w, via, number, assignees, reviewers, cwd) {
 /** Create the merge request with the REST API and the saved Git login. */
 async function mrCreateApi(repo, info, { title, body, draft, assignees = [], reviewers = [], removeSource, squash }) {
   if (info.kind === 'bitbucket') {
+    // Bitbucket refuses the author as a reviewer
+    const me = reviewers.length ? await bitbucketUser(info, repo).catch(() => null) : null
+    const rv = reviewers.filter((r) => BB_UUID.test(String(r.id)) && r.id !== me?.uuid).map((r) => ({ uuid: r.id }))
     const pr = await forgeApi(info, 'POST', `/repositories/${info.path}/pullrequests`, {
       cwd: repo,
-      body: { title, description: body, source: { branch: { name: info.source } }, destination: { branch: { name: info.target } }, ...(draft ? { draft: true } : {}), ...(removeSource !== undefined ? { close_source_branch: !!removeSource } : {}) }
+      body: { title, description: body, source: { branch: { name: info.source } }, destination: { branch: { name: info.target } }, ...(rv.length ? { reviewers: rv } : {}), ...(draft ? { draft: true } : {}), ...(removeSource !== undefined ? { close_source_branch: !!removeSource } : {}) }
     })
     return { created: true, url: pr?.links?.html?.href || `${info.web}/pull-requests/${pr?.id}`, number: pr?.id }
   }
@@ -1945,17 +1978,42 @@ async function mrCreate(repo, { target, source, title, body, draft, web, assigne
  * one-liner: the terminal may be PowerShell (whose pipe can add a BOM) or cmd (whose pipe adds
  * spaces to each line), and either would save the login under a wrong host name.
  */
-function bitbucketLoginCommand(host) {
+/**
+ * Save a Bitbucket user name and API token in Git, run in a terminal. replace: first forget the login
+ * Git keeps for the host (an OAuth token from Git Credential Manager that cannot read pull requests,
+ * say), and make Git Credential Manager ask for a user name and password instead of signing in with
+ * OAuth again (credential.https://<host>.provider = generic, set only when it is the helper).
+ */
+function bitbucketLoginCommand(host, { replace = false } = {}) {
   const dir = path.join(os.tmpdir(), 'git-control')
   mkdirSync(dir, { recursive: true })
   const say = 'Git asks for your Bitbucket user name, then the password: paste the API token. Then press Check again in Git Control.'
+  const name = replace ? 'bitbucket-relogin' : 'bitbucket-login'
   if (process.platform === 'win32') {
-    const file = path.join(dir, 'bitbucket-login.ps1')
-    writeFileSync(file, [`$OutputEncoding = New-Object System.Text.UTF8Encoding $false`, `Write-Host '${say}'`, `"protocol=https\`nhost=${host}\`n" | git credential fill | git credential approve`, `if ($LASTEXITCODE -eq 0) { Write-Host 'Saved.' }`, ''].join('\r\n'))
+    const file = path.join(dir, `${name}.ps1`)
+    const input = `"protocol=https\`nhost=${host}\`n"`
+    const lines = [`$OutputEncoding = New-Object System.Text.UTF8Encoding $false`]
+    if (replace)
+      lines.push(
+        `if ((git config --get-all credential.helper) -match 'manager') { git config --global credential.https://${host}.provider generic }`,
+        `${input} | git credential reject`,
+        `Write-Host 'The old saved login for ${host} was removed.'`
+      )
+    lines.push(`Write-Host '${say}'`, `${input} | git credential fill | git credential approve`, `if ($LASTEXITCODE -eq 0) { Write-Host 'Saved.' }`, '')
+    writeFileSync(file, lines.join('\r\n'))
     return `powershell -NoProfile -ExecutionPolicy Bypass -File "${file}"`
   }
-  const file = path.join(dir, 'bitbucket-login.sh')
-  writeFileSync(file, [`echo '${say}'`, `printf 'protocol=https\\nhost=%s\\n\\n' '${host}' | git credential fill | git credential approve && echo 'Saved.'`, ''].join('\n'))
+  const file = path.join(dir, `${name}.sh`)
+  const input = `printf 'protocol=https\\nhost=%s\\n\\n' '${host}'`
+  const lines = []
+  if (replace)
+    lines.push(
+      `if git config --get-all credential.helper | grep -q manager; then git config --global 'credential.https://${host}.provider' generic; fi`,
+      `${input} | git credential reject`,
+      `echo 'The old saved login for ${host} was removed.'`
+    )
+  lines.push(`echo '${say}'`, `${input} | git credential fill | git credential approve && echo 'Saved.'`, '')
+  writeFileSync(file, lines.join('\n'))
   return `sh '${file.replace(/'/g, `'\\''`)}'`
 }
 
@@ -1967,7 +2025,8 @@ function setupCommand(step, host) {
     'glab-login': `glab auth login --hostname ${host}`,
     'gh-install': 'winget install --id GitHub.cli -e --accept-package-agreements --accept-source-agreements',
     'gh-login': `gh auth login --hostname ${host} --web --git-protocol https`,
-    'bb-login': () => bitbucketLoginCommand(host)
+    'bb-login': () => bitbucketLoginCommand(host),
+    'bb-relogin': () => bitbucketLoginCommand(host, { replace: true })
   }
   const command = commands[step]
   if (!command) throw new GitError('unknown setup step')
@@ -1988,7 +2047,7 @@ async function runSetup(orca, ws, step, host, title) {
 /** Set up one-click merge requests in an Orca terminal, where any prompt (a browser sign-in, a token) is visible. */
 async function mrSetup(orca, repo, { step }) {
   const info = await mrInfo(repo, 'HEAD').catch(() => null)
-  const host = info?.host || (/^gh-/.test(step) ? 'github.com' : 'gitlab.com')
+  const host = info?.host || (/^gh-/.test(step) ? 'github.com' : /^bb-/.test(step) ? 'bitbucket.org' : 'gitlab.com')
   const ws = (await listWorkspaces(orca)).find((w) => isWorkspaceOf(w, repo))
   return runSetup(orca, ws, step, host, 'Merge request setup')
 }
@@ -2281,24 +2340,43 @@ async function bitbucketInbox(h, where, via, { page = 1, mergedOnly = false, mer
   const me = await bitbucketUser(h)
   const here = where?.kind === 'bitbucket' && where.host === h.host && BB_REPO.test(where.path) ? where.path : null
   const repos = [...new Set([here, ...others.filter((o) => o.kind === 'bitbucket' && o.host === h.host && BB_REPO.test(o.path)).map((o) => o.path)].filter(Boolean))].slice(0, 30)
-  const list = (url) => forgeApi(h, 'GET', url).then((r) => (Array.isArray(r?.values) ? r.values : Promise.reject(new Error('no list'))))
-  // each list is tried twice (a slow or flaky network); a list that still fails is null
-  const soft = (url) => list(url).catch(() => sleep(800).then(() => list(url))).catch(() => null)
+  const list = (url) => forgeApi(h, 'GET', url).then((r) => (Array.isArray(r?.values) ? r.values : Promise.reject(new GitError(`${h.host} answered without a list`))))
+  // a list is tried again only when the network failed or Bitbucket had a hiccup (5xx): a refusal
+  // (401, 403, 404) or its rate limit (429) would only say the same again. A list that still fails
+  // keeps its error, so the page can say what happened instead of "it did not answer".
+  const failed = []
+  const soft = (url, what) =>
+    list(url)
+      .catch((e) => (e.status && e.status < 500 ? Promise.reject(e) : sleep(+process.env.GITX_BB_RETRY || 800).then(() => list(url))))
+      .catch((e) => (failed.push({ what, e }), null))
   const openUrl = (r) => `/repositories/${r}/pullrequests?state=OPEN&pagelen=50&${BB_FIELDS}`
   const mergedUrl = (r) => `/repositories/${r}/pullrequests?state=MERGED&sort=-updated_on&pagelen=${MERGED_PAGE}&page=${page}&${BB_FIELDS}`
+  let answered = false // a repository's list came this time (not its last one)
   const [repoLists, mine, dHere] = await Promise.all([
     pool(repos, 4, async (r) => {
       const url = mergedOnly ? mergedUrl(r) : openUrl(r)
-      const got = await soft(url)
-      // it did not answer this time: its last list, so the count does not drop meanwhile
-      if (got) return remember(lastProjectLists, `${h.host}|${url}`, got, 300)
-      return lastProjectLists.get(`${h.host}|${url}`) || []
+      const got = await soft(url, r)
+      if (got) return (answered = true), remember(lastProjectLists, `${h.host}|${url}`, got, 300)
+      // it failed this time: its last list, so the count does not drop meanwhile
+      return lastProjectLists.get(`${h.host}|${url}`) || null
     }),
-    mergedOnly ? [] : soft(`/pullrequests/${encodeURIComponent(me.uuid)}?state=OPEN&pagelen=50&${BB_FIELDS}`),
-    here && merged_ && !mergedOnly ? soft(mergedUrl(here)) : []
+    // every open one I opened anywhere; when Bitbucket refuses it, the repositories' lists still say which are mine
+    mergedOnly ? [] : soft(`/pullrequests/${encodeURIComponent(me.uuid)}?state=OPEN&pagelen=50&${BB_FIELDS}`, 'mine'),
+    here && merged_ && !mergedOnly ? soft(mergedUrl(here), here) : []
   ])
-  if (!mergedOnly && mine === null && repoLists.every((l) => !l?.length)) throw new GitError(`could not list pull requests on ${h.host} (it did not answer)`)
-  const fromRepos = [...repoLists.flat(), ...(dHere || [])]
+  const repoFails = failed.filter((f) => f.what !== 'mine')
+  // the login can see who it is but not pull requests (an OAuth token from Git Credential Manager
+  // without the pull request scope, say): not signed in for this, so the page offers to replace it
+  const denied = failed.find((f) => f.e.status === 401 || f.e.status === 403)
+  if (denied && !answered && (mergedOnly || mine === null))
+    throw Object.assign(new GitError(`The saved Git login for ${h.host} cannot read pull requests (HTTP ${denied.e.status}). Replace it with a Bitbucket API token that may read repositories and pull requests.`), { data: { kind: 'git-login-denied', status: denied.e.status } })
+  if (repos.length ? repoLists.every((l) => l === null) && (mergedOnly || mine === null) : !mergedOnly && mine === null) {
+    const f = repoFails[0] || failed[0]
+    throw new GitError(`could not list pull requests on ${h.host}: ${f ? String(f.e.message).replace(new RegExp(`^${h.host.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}: `), '') : 'no answer'}`)
+  }
+  // some lists failed while others came: shown, with what failed and why
+  const warnings = repoFails.map((f) => `${f.what}: ${String(f.e.message).replace(`${h.host}: `, '')}${lastProjectLists.has(`${h.host}|${mergedOnly ? mergedUrl(f.what) : openUrl(f.what)}`) ? ' (showing the last list)' : ''}`)
+  const fromRepos = [...repoLists.filter(Boolean).flat(), ...(dHere || [])]
   const all = [...fromRepos, ...(mine || [])]
   const more = (mergedOnly ? repoLists : [dHere || []]).some((l) => l?.length >= MERGED_PAGE)
   const lists = [
@@ -2306,7 +2384,7 @@ async function bitbucketInbox(h, where, via, { page = 1, mergedOnly = false, mer
     [all.filter((p) => p.author?.uuid === me.uuid), 'mine'],
     [all.filter((p) => (p.reviewers || []).some((r) => r?.uuid === me.uuid)), 'review']
   ]
-  return withMore(more, collect(lists, (p) => {
+  return Object.assign(withMore(more, collect(lists, (p) => {
     const v = bbVotes(p, me)
     return {
       state: bbState(p.state),
@@ -2332,12 +2410,13 @@ async function bitbucketInbox(h, where, via, { page = 1, mergedOnly = false, mer
       approvedCount: v.approved,
       approvalsRequired: null
     }
-  }))
+  })), { warnings })
 }
 
 /** One Bitbucket pull request in full, in the shape of reviewDetail. */
 async function bitbucketDetail(w, it) {
   const t = (s) => (s ? Date.parse(s) / 1000 : 0)
+  let meErr = null
   const base = bbPr(w.path, w.number)
   const values = (p) => forgeApi(w, 'GET', p).then((r) => (Array.isArray(r?.values) ? r.values : []), () => [])
   const [pr, comments, commits, stat, statuses, me] = await Promise.all([
@@ -2346,7 +2425,7 @@ async function bitbucketDetail(w, it) {
     values(`${base}/commits?pagelen=100`),
     values(`${base}/diffstat?pagelen=500`),
     values(`${base}/statuses?pagelen=100`),
-    bitbucketUser(w).catch(() => null)
+    bitbucketUser(w).catch((e) => ((meErr = e), null))
   ])
   if (!pr) throw new GitError('could not read the pull request')
   const v = bbVotes(pr, me)
@@ -2374,6 +2453,9 @@ async function bitbucketDetail(w, it) {
     me: me ? bbWho(me) : it.me || '',
     myApproved: v.myApproved,
     canApprove: !!me && pr.author?.uuid !== me.uuid,
+    // why there is no Approve: Bitbucket does not let the author approve; or it would not say who is signed in
+    approveBlock: !me ? 'unknown' : pr.author?.uuid === me.uuid ? 'own' : null,
+    approveError: !me && meErr ? meErr.message : null,
     canUnapprove: true,
     // Bitbucket tells what else blocks a merge (its merge checks) only when asked to merge; while its
     // pipeline runs the merge queue waits for it (Bitbucket has no merge-when-it-passes in its API)
@@ -2416,6 +2498,156 @@ async function bitbucketMerge(w, it) {
   }
   if (r?.state !== 'MERGED') throw new GitError('Bitbucket has not merged it yet: look on its page')
   return { ok: true, state: 'merged' }
+}
+
+// ---- Bitbucket Pipelines ----
+// A pipeline and a step are known by uuid ({…}); a step is passed as "<pipeline uuid>~<step uuid>".
+const BB_ID = /^\{[0-9a-f-]{8,64}\}$/i
+const bbPipeId = (v) => {
+  if (!BB_ID.test(String(v))) throw new GitError('bad pipeline id')
+  return String(v)
+}
+const bbStepId = (v) => {
+  const [p, st] = String(v).split('~')
+  if (!BB_ID.test(p || '') || !BB_ID.test(st || '')) throw new GitError('bad step id')
+  return { p, st }
+}
+/** A pipeline's or a step's state in the words the Pipelines tab uses. */
+function bbPipeState(x) {
+  const name = x?.name
+  if (name === 'PENDING') return 'pending'
+  if (name === 'IN_PROGRESS') return /HALTED|PAUSED/.test(x.stage?.name || '') ? 'manual' : 'running'
+  if (name === 'COMPLETED' || x?.result) {
+    const r = x.result?.name
+    return r === 'SUCCESSFUL' ? 'passed' : r === 'FAILED' || r === 'ERROR' ? 'failed' : r === 'STOPPED' || r === 'EXPIRED' ? 'canceled' : r === 'NOT_RUN' ? 'skipped' : 'unknown'
+  }
+  if (name === 'PAUSED' || name === 'HALTED') return 'manual'
+  return name ? String(name).toLowerCase() : 'unknown'
+}
+const BB_TRIGGER = { PUSH: 'push', MANUAL: 'web', SCHEDULE: 'schedule' }
+const bbPipeUrl = (w, n) => `${w.web}/pipelines/results/${n}`
+const bbCommitTitles = new Map()
+function bbCommitTitle(w, sha, repo) {
+  if (!sha) return Promise.resolve('')
+  const key = `${w.host}|${w.path}|${sha}`
+  if (bbCommitTitles.has(key)) return bbCommitTitles.get(key)
+  const pr = forgeApi(w, 'GET', `/repositories/${w.path}/commit/${sha}`, { cwd: repo }).then(
+    (c) => String(c?.message || c?.summary?.raw || '').split('\n')[0],
+    () => (bbCommitTitles.delete(key), '') // a failure is not remembered
+  )
+  remember(bbCommitTitles, key, pr, 3000)
+  return pr
+}
+const bbStepsCache = new Map() // finished pipelines' steps (they never change)
+async function bbPipelineSteps(w, repo, uuid) {
+  const key = `${w.host}|${w.path}|${uuid}`
+  if (bbStepsCache.has(key)) return bbStepsCache.get(key)
+  const r = await forgeApi(w, 'GET', `/repositories/${w.path}/pipelines/${encodeURIComponent(uuid)}/steps/?pagelen=100`, { cwd: repo })
+  return Array.isArray(r?.values) ? r.values : []
+}
+
+/** The Pipelines tab on Bitbucket: recent pipelines (all branches, one branch, or one commit). */
+async function bitbucketPipelines(w, repo, { b, sha, n, details }) {
+  const q = ['sort=-created_on', `pagelen=${Math.min(100, n)}`, sha ? `target.commit.hash=${encodeURIComponent(sha)}` : b ? `target.branch=${encodeURIComponent(b)}` : ''].filter(Boolean).join('&')
+  const r = await forgeApi(w, 'GET', `/repositories/${w.path}/pipelines/?${q}`, { cwd: repo })
+  const list = Array.isArray(r?.values) ? r.values : []
+  // the steps (the dots) and the commit's message, for the newest runs: a finished run never changes
+  const extra = new Map()
+  if (details)
+    await pool(list.slice(0, 25), 6, async (x) => {
+      const [steps, title] = await Promise.all([bbPipelineSteps(w, repo, x.uuid).catch(() => null), bbCommitTitle(w, x.target?.commit?.hash, repo)])
+      if (steps && x.state?.name === 'COMPLETED') remember(bbStepsCache, `${w.host}|${w.path}|${x.uuid}`, steps, 2000)
+      extra.set(x.uuid, { steps, title })
+    })
+  return {
+    kind: 'bitbucket',
+    host: w.host,
+    branch: b,
+    web: `${w.web}/pipelines`,
+    // Bitbucket runs a pipeline again as a whole, not one step or only the failed ones
+    caps: { retryJob: false, retryFailed: false },
+    items: list.map((x) => {
+      const t = x.target || {}
+      const e = extra.get(x.uuid)
+      const pr = t.type === 'pipeline_pullrequest_target'
+      return {
+        id: x.uuid,
+        name: `#${x.build_number}`,
+        // a pipeline run by hand from the custom ones has a name; the others are named by the branch (shown already)
+        title: t.selector?.type === 'custom' && t.selector.pattern ? `custom: ${t.selector.pattern}` : '',
+        commitTitle: e?.title || '',
+        state: bbPipeState(x.state),
+        branch: pr ? t.source || '' : t.ref_name || '',
+        tag: t.ref_type === 'tag',
+        pr: pr ? t.pullrequest?.id || null : null,
+        sha: t.commit?.hash || '',
+        event: pr ? 'pull_request' : BB_TRIGGER[x.trigger?.name] || String(x.trigger?.name || '').toLowerCase(),
+        by: bbWho(x.creator),
+        byName: x.creator?.display_name || '',
+        at: Date.parse(x.created_on) / 1000,
+        finished: x.completed_on ? Date.parse(x.completed_on) / 1000 : null,
+        duration: x.state?.name === 'COMPLETED' ? (x.duration_in_seconds ?? secs(x.created_on, x.completed_on)) : null,
+        url: bbPipeUrl(w, x.build_number),
+        ...(e?.steps ? { stages: e.steps.map((st) => ({ name: st.name || 'Step', state: bbPipeState(st.state), jobs: 1 })) } : {})
+      }
+    })
+  }
+}
+
+/** The steps of one pipeline (Bitbucket's jobs), in order. */
+async function bitbucketSteps(w, repo, id) {
+  const uuid = bbPipeId(id)
+  const [x, steps] = await Promise.all([forgeApi(w, 'GET', `/repositories/${w.path}/pipelines/${encodeURIComponent(uuid)}`, { cwd: repo }), bbPipelineSteps(w, repo, uuid)])
+  return steps.map((st) => ({
+    id: `${uuid}~${st.uuid}`,
+    name: st.name || 'Step',
+    stage: st.stage?.name || 'Steps',
+    state: bbPipeState(st.state),
+    duration: st.duration_in_seconds ?? secs(st.started_on, st.completed_on),
+    url: `${bbPipeUrl(w, x?.build_number)}/steps/${st.uuid}`
+  }))
+}
+
+/** The log of one step (last 400 KB). */
+async function bitbucketStepLog(w, repo, id) {
+  const { p, st } = bbStepId(id)
+  const text = await forgeApi(w, 'GET', `/repositories/${w.path}/pipelines/${encodeURIComponent(p)}/steps/${encodeURIComponent(st)}/log`, { raw: true, accept: 'application/octet-stream', cwd: repo }).catch((e) => {
+    if (e.status === 404) return '' // no log yet: the step has not started
+    throw e
+  })
+  const clean = String(text || '')
+    // eslint-disable-next-line no-control-regex
+    .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '')
+    .replace(/\r(?!\n)/g, '\n')
+  const max = 400_000
+  return { log: clean.length > max ? clean.slice(-max) : clean, truncated: clean.length > max }
+}
+
+/** Run a pipeline again (same commit, same pipeline definition), or stop it. */
+async function bitbucketPipelineAct(w, repo, id, action) {
+  const uuid = bbPipeId(id)
+  const P = `/repositories/${w.path}/pipelines/`
+  if (action === 'cancel') {
+    await forgeApi(w, 'POST', `${P}${encodeURIComponent(uuid)}/stopPipeline`, { cwd: repo })
+    shortMemo.clear()
+    return { ok: true }
+  }
+  if (action === 'retryJob' || action === 'retryFailed') throw new GitError('Bitbucket runs a pipeline again as a whole: use Retry all')
+  if (action !== 'retry') throw new GitError('unknown pipeline action')
+  const x = await forgeApi(w, 'GET', `${P}${encodeURIComponent(uuid)}`, { cwd: repo })
+  const t = x?.target || {}
+  const commit = t.commit?.hash ? { type: 'commit', hash: t.commit.hash } : undefined
+  const selector = t.selector?.type ? { type: t.selector.type, ...(t.selector.pattern ? { pattern: t.selector.pattern } : {}) } : undefined
+  const target =
+    t.type === 'pipeline_pullrequest_target'
+      ? { type: 'pipeline_pullrequest_target', source: t.source, destination: t.destination, ...(t.destination_commit?.hash ? { destination_commit: { hash: t.destination_commit.hash } } : {}), ...(commit ? { commit } : {}), ...(t.pullrequest?.id ? { pullrequest: { id: String(t.pullrequest.id) } } : {}), ...(selector ? { selector } : {}) }
+      : t.type === 'pipeline_commit_target'
+        ? { type: 'pipeline_commit_target', ...(commit ? { commit } : {}), ...(selector ? { selector } : {}) }
+        : { type: 'pipeline_ref_target', ref_type: t.ref_type || 'branch', ref_name: t.ref_name, ...(commit ? { commit } : {}), ...(selector ? { selector } : {}) }
+  if (target.type === 'pipeline_ref_target' && !target.ref_name) throw new GitError('Bitbucket did not say which branch this pipeline ran on')
+  const r = await forgeApi(w, 'POST', P, { cwd: repo, body: { target } })
+  shortMemo.clear()
+  return { ok: true, id: r?.uuid || null }
 }
 
 /** The CI state of a commit on Bitbucket (Bitbucket Pipelines and other builds report there); undefined when it does not answer. */
@@ -2862,8 +3094,18 @@ async function reviewsListUncached(orca, repo, { page = 1, mergedOnly = false, m
         const via = p.via === 'git' ? 'git' : 'cli'
         const opt = { page: Math.max(1, Math.min(50, +page || 1)), mergedOnly: !!mergedOnly, merged: !!merged, others }
         return ({ github: githubInbox, bitbucket: bitbucketInbox }[p.provider] || gitlabInbox)(p._h, where, via, opt).then(
-          (list) => (items.push(...list), (moreMerged ||= !!list.more), list.mergedTotal != null && (mergedTotal = (mergedTotal || 0) + list.mergedTotal)),
-          (e) => errors.push(`${p.host}: ${e.message}`)
+          (list) => {
+            items.push(...list)
+            moreMerged ||= !!list.more
+            if (list.mergedTotal != null) mergedTotal = (mergedTotal || 0) + list.mergedTotal
+            for (const w of list.warnings || []) errors.push(`${p.host}: ${w}`)
+          },
+          (e) => {
+            // Bitbucket: the saved login cannot read pull requests: not signed in for this, so the
+            // page shows how to replace the login instead of an error
+            if (p.provider === 'bitbucket' && e.data?.kind === 'git-login-denied') return Object.assign(p, { signedIn: false, via: null, problem: e.message })
+            errors.push(`${p.host}: ${e.message}`)
+          }
         )
       })
   )
@@ -3194,6 +3436,7 @@ async function reviewDetail(it) {
       me: meG,
       myApproved: !!meG && latest.get(meG) === 'approved',
       canApprove: !!meG && pr.user?.login !== meG,
+      approveBlock: !meG ? 'unknown' : pr.user?.login === meG ? 'own' : null,
       canUnapprove: false,
       merge: ghMergeInfo(pr),
       comments,
@@ -3233,6 +3476,7 @@ async function reviewDetail(it) {
     me: meL,
     myApproved: approvals?.user_has_approved ?? (!!meL && approvedBy.has(meL)),
     canApprove: approvals?.user_can_approve ?? (!!meL && mr.author?.username !== meL),
+    approveBlock: !!meL && mr.author?.username === meL ? 'own' : null,
     canUnapprove: true,
     merge: glMergeInfo(mr, approvals),
     comments: (Array.isArray(notes) ? notes : [])

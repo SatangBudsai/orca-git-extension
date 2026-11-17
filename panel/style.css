@@ -510,6 +510,9 @@ html.light .ref.current > span:first-child { background: color-mix(in srgb, var(
 .pill.role-review { background: color-mix(in srgb, var(--mod) 18%, transparent); color: var(--mod); }
 .pill.role-assigned { background: color-mix(in srgb, var(--ren) 18%, transparent); color: var(--ren); }
 .setup-card { border-style: dashed; }
+/* why the saved login is not enough (Bitbucket: it cannot read pull requests) */
+.setup-problem { display: flex; align-items: flex-start; gap: 6px; margin: 4px 0 2px; color: var(--mod); font-size: 12px; overflow-wrap: anywhere; }
+.setup-problem svg { flex: none; margin-top: 2px; }
 
 /* AI review dialog */
 .ai-review-dialog { max-width: 680px; }
@@ -746,6 +749,8 @@ span.ci { cursor: default; height: 17px; padding: 0 8px; font-size: 11px; }
 .mr-people { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .mr-people > .pp-note { grid-column: 1 / -1; }
 @media (max-width: 620px) { .mr-people { grid-template-columns: 1fr; } }
+.mr-people.mr-people-one { grid-template-columns: 1fr; } /* Bitbucket: reviewers only */
+.mrw-noapprove { font-size: 12px; white-space: nowrap; }
 .mr-opts { display: flex; flex-direction: column; gap: 8px; }
 .pp { position: relative; }
 .pp-box { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; min-height: 32px; padding: 3px 8px; border: 1px solid var(--line-hi); border-radius: var(--radius); background: var(--input, var(--bg)); cursor: text; }

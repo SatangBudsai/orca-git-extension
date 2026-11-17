@@ -82,16 +82,24 @@ description are filled in the way GitLab does it, assignees and reviewers come f
 ### Bitbucket Cloud
 Repositories on `bitbucket.org` show their pull requests in **MR / PR** too: the open ones of the Bitbucket
 repositories open in Orca (with Review requested and Opened by me), the ones you opened anywhere, and in **All**
-this repository's merged ones. Read one, approve or take the approval back, comment, request changes, merge (merge
-commit or squash, closing the source branch if you like) and open a pull request, with its CI from the builds
-that report to Bitbucket (Bitbucket Pipelines included). Bitbucket Pipelines are not in the Pipelines tab yet.
+this repository's merged ones. Read one, approve or take the approval back, comment (also on a line), request
+changes, merge (merge commit or squash, closing the source branch if you like) and open a pull request with
+reviewers (the repository's default reviewers come picked), with its CI from the builds that report to Bitbucket.
+**Bitbucket Pipelines** are in the Pipelines tab like GitHub Actions and GitLab CI: every branch's runs with their
+steps, a step's log with its error lines, run a pipeline again or stop it (Bitbucket runs a pipeline again as a
+whole, so there is no retry of one step). When a list fails, the page says why (the HTTP status and Bitbucket's
+message); when Bitbucket's rate limit is reached, the last lists stay and nothing is asked until it lifts.
 
 Bitbucket has no CLI like `gh` or `glab`, so Git Control uses the login Git keeps for `bitbucket.org`. If you
 clone over HTTPS that is already there; with SSH, create an [API token](https://id.atlassian.com/manage-profile/security/api-tokens)
 with access to repositories and pull requests, then **Save it in Git** (on the Connect card) stores your Bitbucket
 user name and the token. Bitbucket's API takes an API token only with your Atlassian email: Git Control uses your
-Git `user.email`, or `git config --global gitcontrol.bitbucketEmail you@example.com` when that differs. A
-self-hosted Bitbucket (Server / Data Center) is not supported.
+Git `user.email`, or `git config --global gitcontrol.bitbucketEmail you@example.com` when that differs.
+
+If Git already keeps a login that cannot read pull requests (Git Credential Manager's Bitbucket sign-in, say), the
+Connect card says so and **Replace the saved login** swaps it for your user name and an API token in a terminal
+(with Git Credential Manager it also sets `credential.https://bitbucket.org.provider generic`, so it asks for
+them instead of signing in with the browser). A self-hosted Bitbucket (Server / Data Center) is not supported.
 
 ### Merge and resolve conflicts
 Right-click any branch or tag label in the graph (or a tag in the sidebar): the first item merges that one into
@@ -238,6 +246,8 @@ node zoom.mjs <plugin folder> <shots folder>      # zoom keys, wheel and pinch; 
 node mobile.mjs <plugin folder> <shots folder>    # phone size, loaded the way Orca's web client loads it
 node sidebar.mjs <plugin folder> <shots folder>   # the right-sidebar panel at several widths
 node worker-api.mjs github|gitlab|bitbucket       # merge requests, reviews and CI through the Git login
+node bitbucket.mjs <plugin folder> <shots folder> # Bitbucket Cloud end to end: sign-in, list, approve, Pipelines, new PR
+node bitbucket-login.mjs                          # "Save it in Git" / "Replace the saved login" run in real shells
 node merge-queue.mjs                              # Approve & merge on several: one at a time per project
 node statusbar.mjs                                # the status bar items: Git never disappears, Repos counts
 node github-ratelimit.mjs                         # GitHub searches shared, paused at the rate limit

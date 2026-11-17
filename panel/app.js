@@ -6112,7 +6112,7 @@ async function mergeRequestDialog(target, source, swapped) {
   }
   if (!info.commits.length) return toast(t('{source} and {target} have the same commits: there is nothing to merge.', { source: info.source, target: info.target }), 'error')
   const isGh = info.kind === 'github'
-  const isBb = info.kind === 'bitbucket' // pull requests; no people to pick here, no squash when it is opened
+  const isBb = info.kind === 'bitbucket' // pull requests; reviewers only (no assignees), no squash when it is opened
   const noun = isGh || isBb ? t('pull request') : t('merge request')
   const service = isGh ? 'GitHub' : isBb ? 'Bitbucket' : info.host
   const repo = state.repo
@@ -6137,7 +6137,7 @@ async function mergeRequestDialog(target, source, swapped) {
   const gitlabOpts = isBb
     ? h('div', { class: 'mr-opts' }, h('label', { class: 'check' }, removeSource, t('Close source branch after the pull request is merged')))
     : !isGh && h('div', { class: 'mr-opts' }, h('label', { class: 'check' }, removeSource, t('Delete source branch when merge request is accepted')), h('label', { class: 'check' }, squash, t('Squash commits when merge request is accepted')))
-  if (!isBb) request('mr.people', { repo, query: '' }, 30000).then(
+  request('mr.people', { repo, query: '' }, 30000).then(
     (r) => {
       peopleNote.remove()
       if (!r.via) {
@@ -6147,6 +6147,8 @@ async function mergeRequestDialog(target, source, swapped) {
       }
       assignees.setPeople(r.people, r.me)
       reviewers.setPeople(r.people, r.me)
+      // Bitbucket adds the repository's default reviewers only on its own form: here they come picked
+      if (isBb && r.defaults?.reviewers?.length && !remembered?.reviewers?.length) reviewers.set(r.defaults.reviewers)
       // nobody is picked for you: "Assign to me" stays one click away
       if (!isGh && r.defaults) {
         if (typeof r.defaults.removeSource === 'boolean') removeSource.checked = r.defaults.removeSource // the project's setting
@@ -6242,7 +6244,7 @@ async function mergeRequestDialog(target, source, swapped) {
   async function submit(web) {
     if (!web && !info.tools.via) {
       // first time: set the CLI up (or just sign in) in a terminal; "Check again" enables one click
-      return setup(info.tools.installed ? (isGh ? 'gh-login' : 'glab-login') : isGh ? 'gh-install' : 'glab-install')
+      return setup(isBb ? 'bb-login' : info.tools.installed ? (isGh ? 'gh-login' : 'glab-login') : isGh ? 'gh-install' : 'glab-install')
     }
     if (!web && !title.value.trim()) return title.focus()
     const btn = web ? linkBtn : createBtn
@@ -6250,8 +6252,8 @@ async function mergeRequestDialog(target, source, swapped) {
     linkBtn.disabled = createBtn.disabled = true
     clear(btn).append(h('span', { class: 'spinner' }), info.needsPush ? t('Pushing…') : web ? t('Opening…') : t('Creating…'))
     try {
-      const who = isBb ? { removeSource: removeSource.checked } : { assignees: assignees.value(), reviewers: reviewers.value(), ...(!isGh ? { removeSource: removeSource.checked, squash: squash.checked } : {}) }
-      store.set(peopleKey, { reviewers: who.reviewers, assignMe: who.assignees.length > 0 })
+      const who = isBb ? { reviewers: reviewers.value(), removeSource: removeSource.checked } : { assignees: assignees.value(), reviewers: reviewers.value(), ...(!isGh ? { removeSource: removeSource.checked, squash: squash.checked } : {}) }
+      store.set(peopleKey, { reviewers: who.reviewers, assignMe: (who.assignees || []).length > 0 })
       const r = await request('mr.create', { repo, target: info.target, source: info.source, title: title.value, body: body.value, draft: draft.checked, web, ...who }, 120000)
       if (r.warning) toast(r.warning, 'error', 8000)
       const pushed = r.pushed ? t('{branch} pushed to {remote}.', { branch: info.source, remote: info.remote }) + ' ' : ''
@@ -6332,14 +6334,14 @@ async function mergeRequestDialog(target, source, swapped) {
       aiWrap(title)
     ),
     h('div', { class: 'field' }, h('label', null, t('Description')), aiWrap(body)),
-    !isBb && h('div', { class: 'mr-people' }, peopleNote, h('div', { class: 'field' }, h('label', { class: 'row' }, t('Assignees'), h('span', { class: 'grow' }), assignees.meBtn), assignees.el), h('div', { class: 'field' }, h('label', { class: 'row' }, isGh ? t('Reviewers (Create now only)') : t('Reviewers'), h('span', { class: 'grow' }), reviewers.meBtn), reviewers.el)),
+    h('div', { class: `mr-people${isBb ? ' mr-people-one' : ''}` }, peopleNote, !isBb && h('div', { class: 'field' }, h('label', { class: 'row' }, t('Assignees'), h('span', { class: 'grow' }), assignees.meBtn), assignees.el), h('div', { class: 'field' }, h('label', { class: 'row' }, isGh || isBb ? t('Reviewers (Create now only)') : t('Reviewers'), h('span', { class: 'grow' }), !isBb && reviewers.meBtn), reviewers.el)),
     gitlabOpts,
     h('label', { class: 'check' }, draft, t('Draft (Create now only)')),
     note,
     h('div', { class: 'buttons' }, h('button', { type: 'button', class: 'btn', onClick: close }, t('Cancel')), h('span', { class: 'grow' }), h('button', { type: 'button', class: 'btn ai-review-btn', title: t('Let AI review these changes before anyone else sees them'), onClick: () => localReviewModal({ source: info.source, target: info.target, onNext: () => {} }) }, icon('sparkle', 13), t('Review with AI first')), linkBtn, createBtn)
   )
   drawButtons()
-  const box = h('div', { class: 'dialog mr-dialog', role: 'dialog' }, h('h3', null, isGh ? t('New pull request') : t('New merge request')), form)
+  const box = h('div', { class: 'dialog mr-dialog', role: 'dialog' }, h('h3', null, isGh || isBb ? t('New pull request') : t('New merge request')), form)
   const overlay = h('div', { class: 'overlay', onMousedown: (e) => e.target === overlay && softClose() }, box)
   mountOverlay(overlay, close)
   document.addEventListener('keydown', onKey)
@@ -6546,12 +6548,14 @@ async function viewReviews() {
         'div',
         { class: 'card setup-card' },
         h('div', { class: 'row' }, icon('globe', 14), h('strong', null, t('Connect {host}', { host: p.host }))),
-        h('div', { class: 'dim' }, p.provider === 'bitbucket' ? t('See and approve its pull requests here, with the login Git keeps for {host}: create a Bitbucket API token (repositories and pull requests), then save your Bitbucket user name and the token in Git once.', { host: p.host }) : p.provider === 'github' ? t('See and approve its pull requests here. Needs {cli}, set up once.', { cli: p.cli }) : t('See and approve its merge requests here. Needs {cli}, set up once.', { cli: p.cli })),
+        p.problem && h('div', { class: 'setup-problem' }, icon('alert', 12), h('span', null, p.problem)),
+        h('div', { class: 'dim' }, p.provider === 'bitbucket' ? (p.problem ? t('Git keeps a login for {host} that cannot read pull requests (often Git Credential Manager\'s Bitbucket sign-in). Create a Bitbucket API token (repositories and pull requests), then replace the saved login with your Bitbucket user name and the token.', { host: p.host }) : t('See and approve its pull requests here, with the login Git keeps for {host}: create a Bitbucket API token (repositories and pull requests), then save your Bitbucket user name and the token in Git once.', { host: p.host })) : p.provider === 'github' ? t('See and approve its pull requests here. Needs {cli}, set up once.', { cli: p.cli }) : t('See and approve its merge requests here. Needs {cli}, set up once.', { cli: p.cli })),
         h(
           'div',
           { class: 'actions-wrap' },
           p.provider === 'bitbucket' && h('button', { class: 'btn sm', onClick: () => openLink('https://id.atlassian.com/manage-profile/security/api-tokens') }, icon('open', 12), t('Create an API token')),
-          p.provider === 'bitbucket' && h('button', { class: 'btn sm', onClick: step('bb-login') }, icon('user', 12), t('Save it in Git')),
+          p.provider === 'bitbucket' && !p.problem && h('button', { class: 'btn sm', onClick: step('bb-login') }, icon('user', 12), t('Save it in Git')),
+          p.provider === 'bitbucket' && p.problem && h('button', { class: 'btn sm primary', onClick: async () => (await confirmBox(t('Replace the saved login for {host}?', { host: p.host }), t('Git forgets the login it keeps for {host}, then asks for your Bitbucket user name and the API token and saves them. With Git Credential Manager, it is set to ask for them instead of signing in with the browser. Pushing and pulling over HTTPS use the new login too.', { host: p.host }), t('Replace'))) && step('bb-relogin')() }, icon('user', 12), t('Replace the saved login')),
           p.provider !== 'bitbucket' && !p.installed && p.canInstall && h('button', { class: 'btn sm', onClick: step(`${p.cli}-install`) }, icon('download', 12), t('1. Install {cli}', { cli: p.cli })),
           p.provider !== 'bitbucket' && h('button', { class: 'btn sm', disabled: !p.installed, onClick: step(`${p.cli}-login`) }, icon('user', 12), p.installed ? t('Sign in') : t('2. Sign in')),
           h('button', { class: 'btn sm', onClick: async () => (await loadReviews(true).catch((e) => toast(e.message, 'error')), renderView({ force: true })) }, icon('refresh', 12), t('Check again'))
@@ -7306,8 +7310,8 @@ async function reviewDetailSheet(it, tab = 'overview') {
     // Changes and Pipeline open their own page over this one (Back returns here)
     if (id === 'changes') return reviewDiffSheet(it)
     if (id === 'pipeline') {
-      if (localRepo && d.headSha && it.provider !== 'bitbucket') return openPipelines({ sha: d.headSha, branch: d.source })
-      return openLink(it.provider === 'github' ? `${d.url}/checks` : it.provider === 'bitbucket' ? d.url : `${d.url}/pipelines`)
+      if (localRepo && d.headSha) return openPipelines({ sha: d.headSha, branch: d.source })
+      return openLink(it.provider === 'github' ? `${d.url}/checks` : it.provider === 'bitbucket' ? `${d.url.replace(/\/pull-requests\/\d+\/?$/, '')}/pipelines` : `${d.url}/pipelines`)
     }
     drawTabs(id)
     clear(pane).append(id === 'commits' ? commitsPane() : overviewPane())
@@ -7362,7 +7366,8 @@ async function reviewDetailSheet(it, tab = 'overview') {
       h('div', { class: 'mrd-box' }, h('div', { class: 'mrd-label' }, t('Opened by')), person(d.author || it.author || '?', h('span', { class: 'dim mrd-when-small' }, ago(d.created)))),
       h('div', { class: 'mrd-box' }, h('div', { class: 'mrd-label' }, t('Approvals')), h('div', { class: 'mrd-big' }, d.approvals.required ? t('{given} of {required}', { given: d.approvals.given, required: d.approvals.required }) : String(d.approvals.given), h('span', { class: 'dim' }, d.approvals.required ? ' ' + t('approved') : d.approvals.given === 1 ? ' ' + t('approval') : ' ' + t('approvals')))),
       h('div', { class: 'mrd-box' }, h('div', { class: 'mrd-label' }, t('Reviewers')), d.reviewers.length ? d.reviewers.map((r) => person(r.name, stateIcon(r.state))) : h('div', { class: 'dim' }, t('None'))),
-      h('div', { class: 'mrd-box' }, h('div', { class: 'mrd-label' }, t('Assignees')), d.assignees.length ? d.assignees.map((a) => person(a)) : h('div', { class: 'dim' }, t('None'))),
+      // Bitbucket has no assignees
+      it.provider !== 'bitbucket' && h('div', { class: 'mrd-box' }, h('div', { class: 'mrd-label' }, t('Assignees')), d.assignees.length ? d.assignees.map((a) => person(a)) : h('div', { class: 'dim' }, t('None'))),
       d.labels.length > 0 && h('div', { class: 'mrd-box' }, h('div', { class: 'mrd-label' }, t('Labels')), h('div', { class: 'mrd-labels' }, d.labels.map((l) => h('span', { class: 'pill role' }, l)))),
       (d.stats.add != null || d.stats.files != null) &&
         h('div', { class: 'mrd-box' }, h('div', { class: 'mrd-label' }, t('Changes')), h('div', { class: 'mono' }, d.stats.files != null && (d.stats.files === 1 ? t('{n} file', { n: d.stats.files }) : t('{n} files', { n: d.stats.files })) + ' ', d.stats.add != null && [h('span', { class: 'a' }, `+${d.stats.add}`), ' ', h('span', { class: 'd' }, `−${d.stats.del}`)]))
@@ -7413,6 +7418,7 @@ async function reviewDetailSheet(it, tab = 'overview') {
         icon(apOk ? 'check' : 'user', 13),
         h('span', { class: 'grow' }, ...apText, d.myApproved && h('span', { class: 'mrw-you' }, ' · ' + t('you approved'))),
         open && d.canApprove && !d.myApproved && h('button', { class: 'btn sm primary mrw-approve', onClick: (e) => act(e.currentTarget, 'approve', null, t('Approving…')) }, icon('check', 12), t('Approve')),
+        open && !d.canApprove && !d.myApproved && d.approveBlock && h('span', { class: 'dim mrw-noapprove', title: d.approveError || '' }, d.approveBlock === 'own' ? t('You opened it, so you cannot approve it') : t('Approve is not shown: could not tell who is signed in')),
         open && d.myApproved && h('span', { class: 'pill rv-waiting' }, icon('check', 10), t('Approved')),
         open && d.myApproved && d.canUnapprove && h('button', { class: 'btn sm mrw-revoke', title: t('Take back your approval'), onClick: (e) => act(e.currentTarget, 'unapprove', null, t('Revoking…')) }, t('Revoke'))
       )
@@ -7508,6 +7514,7 @@ let pipesTimer = null
 const PIPE_SRC = { push: t('push'), merge_request_event: t('merge request'), pull_request: t('pull request'), schedule: t('schedule'), web: t('run by hand'), api: 'API', trigger: t('trigger'), pipeline: t('downstream'), parent_pipeline: t('child'), workflow_dispatch: t('run by hand'), chat: t('chat'), external: t('external') }
 /** A pipeline's ref the way GitLab shows it: a merge request as !N, a tag with its icon, else the branch. */
 function refChip(p) {
+  if (p.pr) return h('span', { class: 'ref pc-mr', title: t('Pull request #{n} from {branch}', { n: p.pr, branch: p.branch }) }, icon('pr', 10), h('span', { class: 'ref-t' }, `#${p.pr}`))
   const mr = String(p.branch || '').match(/^refs\/merge-requests\/(\d+)\/(head|merge)$/)
   if (mr) return h('span', { class: 'ref pc-mr', title: p.branch }, icon('pr', 10), h('span', { class: 'ref-t' }, `!${mr[1]}`))
   if (p.tag) return h('span', { class: 'ref tag', title: t('Tag {name}', { name: p.branch }) }, icon('tag', 10), h('span', { class: 'ref-t' }, p.branch))
@@ -7550,7 +7557,7 @@ async function viewPipelinesTab() {
   if (!pipesLoading && !c?.error && (!c || !c.full || Date.now() - c.at > 4000)) refreshPipes(repo)
   if (!c?.data) {
     if (c?.error && !pipesLoading) {
-      root.append(h('div', { class: 'empty' }, icon('pipeline', 28), h('div', null, c.error), h('div', { class: 'dim' }, t('Pipelines show for repositories on GitHub or GitLab that your Git login can reach.')), h('button', { class: 'btn sm', style: { marginTop: '10px' }, onClick: () => (pipesCache.delete(repo), renderView({ force: true })) }, icon('refresh', 12), t('Try again'))))
+      root.append(h('div', { class: 'empty' }, icon('pipeline', 28), h('div', null, c.error), h('div', { class: 'dim' }, t('Pipelines show for repositories on GitHub, GitLab or Bitbucket that your Git login can reach.')), h('button', { class: 'btn sm', style: { marginTop: '10px' }, onClick: () => (pipesCache.delete(repo), renderView({ force: true })) }, icon('refresh', 12), t('Try again'))))
       return root
     }
     root.append(h('div', { class: 'skeleton-list' }, ...Array.from({ length: 6 }, () => h('div', { class: 'skeleton-row' }, h('span', { class: 'bar' })))))
@@ -7577,7 +7584,7 @@ async function viewPipelinesTab() {
   )
   const search = h('input', { type: 'text', class: 'rv-search', placeholder: t('Filter by branch, title or who started it…'), value: f.text, onInput: (e) => ((f.text = e.target.value), draw()) })
   root.append(
-    h('div', { class: 'history-bar' }, chips, h('span', { class: 'grow' }), h('span', { class: 'dim', style: { fontSize: '11.5px' } }, `${data.kind === 'github' ? 'GitHub Actions' : 'GitLab CI'} · ${data.host}`), h('button', { class: 'btn sm', onClick: () => openLink(data.web) }, icon('open', 12), t('Open in browser')), h('button', { class: 'btn sm pipes-refresh', disabled: updating, title: updating ? t('Updating…') : t('Refresh'), onClick: () => refreshPipes(repo).then(() => {}) }, updating ? h('span', { class: 'spinner sm' }) : icon('refresh', 12), updating ? t('Updating') : t('Refresh'))),
+    h('div', { class: 'history-bar' }, chips, h('span', { class: 'grow' }), h('span', { class: 'dim', style: { fontSize: '11.5px' } }, `${{ github: 'GitHub Actions', bitbucket: 'Bitbucket Pipelines' }[data.kind] || 'GitLab CI'} · ${data.host}`), h('button', { class: 'btn sm', onClick: () => openLink(data.web) }, icon('open', 12), t('Open in browser')), h('button', { class: 'btn sm pipes-refresh', disabled: updating, title: updating ? t('Updating…') : t('Refresh'), onClick: () => refreshPipes(repo).then(() => {}) }, updating ? h('span', { class: 'spinner sm' }) : icon('refresh', 12), updating ? t('Updating') : t('Refresh'))),
     h('div', { class: 'rv-filters' }, h('div', { class: 'rv-search-wrap' }, icon('search', 12), search))
   )
   const list = h('div', { class: 'pipe-list' })
@@ -7704,7 +7711,7 @@ async function openPipelines({ branch, sha, openId } = {}) {
         h('b', null, p.name),
         h('span', { class: 'dim' }, [p.sha?.slice(0, 7), dur(p.duration)].filter(Boolean).join(' · ')),
         h('span', { class: 'grow' }),
-        failed.length > 0 && h('button', { class: 'btn sm', onClick: (e) => act('retryFailed', t('Retrying the failed jobs'), {}, e.currentTarget) }, icon('refresh', 12), t('Retry failed')),
+        failed.length > 0 && data.caps?.retryFailed !== false && h('button', { class: 'btn sm', onClick: (e) => act('retryFailed', t('Retrying the failed jobs'), {}, e.currentTarget) }, icon('refresh', 12), t('Retry failed')),
         !running && h('button', { class: 'btn sm', onClick: (e) => act('retry', t('Pipeline restarted'), {}, e.currentTarget) }, icon('refresh', 12), t('Retry all')),
         running && h('button', { class: 'btn sm danger', onClick: async (e) => (await confirmBox(t('Cancel pipeline {name}?', { name: p.name }), t('Running jobs are stopped.'), t('Cancel pipeline'), true)) && act('cancel', t('Pipeline canceled'), {}, e.currentTarget) }, icon('x', 12), t('Cancel')),
         h('button', { class: 'btn sm', onClick: () => openLink(p.url) }, icon('open', 12), t('Open'))
@@ -7734,7 +7741,7 @@ async function openPipelines({ branch, sha, openId } = {}) {
                   h('span', { class: `ci ci-${j.state} pipe-dot`, title: PIPE_LABEL[j.state] || j.state }, ciIcon(j.state)),
                   h('span', { class: 'pipe-job-name' }, j.name, j.allowFailure && h('span', { class: 'dim' }, ' ' + t('(allowed to fail)'))),
                   h('span', { class: 'dim mono' }, dur(j.duration)),
-                  j.state === 'failed' && h('button', { class: 'icon-btn', title: t('Retry this job'), onClick: (e) => (e.stopPropagation(), act('retryJob', t('Retrying {name}', { name: j.name }), { job: j.id }, e.currentTarget)) }, icon('refresh', 12))
+                  j.state === 'failed' && data.caps?.retryJob !== false && h('button', { class: 'icon-btn', title: t('Retry this job'), onClick: (e) => (e.stopPropagation(), act('retryJob', t('Retrying {name}', { name: j.name }), { job: j.id }, e.currentTarget)) }, icon('refresh', 12))
                 )
               )
           )
@@ -7828,7 +7835,7 @@ async function openPipelines({ branch, sha, openId } = {}) {
         h('b', null, j.name),
         live && h('span', { class: 'pl-live' }, h('i'), t('live')),
         h('span', { class: 'grow' }),
-        j.state === 'failed' && h('button', { class: 'btn sm', onClick: async (e) => { const b = e.currentTarget; b.disabled = true; append(clear(b), [h('span', { class: 'spinner' }), t('Sending…')]); try { await call('pipelineAct', { id: p.id, action: 'retryJob', job: j.id }); toast(t('Retrying {name}', { name: j.name })); later(() => showPipeline({ ...p, state: 'pending' }, data), 1200) } catch (err) { toast(err.message, 'error'); b.disabled = false; append(clear(b), [icon('refresh', 12), t('Retry job')]) } } }, icon('refresh', 12), t('Retry job')),
+        j.state === 'failed' && data.caps?.retryJob !== false && h('button', { class: 'btn sm', onClick: async (e) => { const b = e.currentTarget; b.disabled = true; append(clear(b), [h('span', { class: 'spinner' }), t('Sending…')]); try { await call('pipelineAct', { id: p.id, action: 'retryJob', job: j.id }); toast(t('Retrying {name}', { name: j.name })); later(() => showPipeline({ ...p, state: 'pending' }, data), 1200) } catch (err) { toast(err.message, 'error'); b.disabled = false; append(clear(b), [icon('refresh', 12), t('Retry job')]) } } }, icon('refresh', 12), t('Retry job')),
         false && h('button', { class: 'btn sm', title: t('Jump to the first error line'), onClick: () => pre.querySelector('.pl.bad')?.scrollIntoView({ block: 'center' }) }, icon('alert', 12), errors > 1 ? t('{n} error lines', { n: errors }) : t('{n} error line', { n: errors })),
         h('button', { class: 'btn sm', onClick: () => copy(r.log).then(() => toast(t('Log copied'))) }, icon('copy', 12), t('Copy log')),
         h('button', { class: 'btn sm', onClick: () => openLink(j.url) }, icon('open', 12), t('Open'))

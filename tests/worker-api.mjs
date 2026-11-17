@@ -265,8 +265,10 @@ try {
   const ci = await op('ciStatus', {})
   ok(ci.state === (KIND === 'github' ? 'passed' : 'failed'), 'ciStatus', JSON.stringify(ci))
   if (KIND === 'bitbucket') {
-    const pe = await op('pipelines', {}).then(() => null, (e) => e)
-    ok(pe && /Bitbucket Pipelines/.test(pe.message), 'bitbucket pipelines explain', pe?.message)
+    // Bitbucket Pipelines through the same login (tests/bitbucket.mjs covers them in full)
+    log.length = 0
+    await op('pipelines', {}).catch(() => null)
+    ok(log.some((x) => x.method === 'GET' && x.url.startsWith('/2.0/repositories/ws/repo/pipelines/?') && x.url.includes('target.branch=')), 'bitbucket pipelines asked of Bitbucket', JSON.stringify(log.map((x) => x.url)))
   }
   // SSH / enterprise remote parsing
   if (KIND === 'bitbucket') delete process.env.GITX_API_KIND // bitbucket.org is recognised by its name
