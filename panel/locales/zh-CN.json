@@ -10,6 +10,7 @@
   "Open this panel inside Orca": "请在 Orca 中打开此面板",
   "Git Control was updated. Reload this tab to use the new version (approve it in Orca first if it asks).": "Git Control 已更新。重新加载此标签页以使用新版本（如果 Orca 提示，请先批准）。",
   "Reload": "重新加载",
+  "Reset zoom": "重置缩放",
   "OK": "确定",
   "Cancel": "取消",
   "No match: type the host or user@host": "无匹配项：请输入主机或 user@host",

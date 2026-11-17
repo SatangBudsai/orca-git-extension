@@ -245,6 +245,86 @@ const state = {
 }
 
 /* =========================================================================
+   zoom: Ctrl/Cmd + = - 0, Ctrl+wheel and trackpad pinch
+   ========================================================================= */
+/*
+ * Orca's zoom does not reach this page: in a Git Control tab Orca's zoom keys resize the code
+ * editor's font, and Ctrl+wheel is not handled for plugin pages at all. So the page zooms itself
+ * with CSS zoom. When Orca did scale the page (its whole-window zoom, which shows up as a
+ * devicePixelRatio change) the key is left to Orca, so the two never add up.
+ * Under CSS zoom, rects, clientX/Y and innerWidth are screen pixels while CSS px are page pixels:
+ * anything positioned from a rect or a pointer divides by ZOOM (see `zpx`).
+ */
+const ZOOM_STEPS = [0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5]
+const ZOOM_KEY = IN_TAB ? 'zoomTab' : 'zoomSide'
+let ZOOM = 1
+/** A screen-pixel length (from a rect, a pointer or innerWidth) as a CSS px value for this page. */
+const zpx = (v) => `${v / ZOOM}px`
+let zoomBadge = null
+let zoomBadgeTimer = 0
+function setZoom(z, { save = true, badge = true } = {}) {
+  z = Math.round(Math.min(2.5, Math.max(0.5, z)) * 100) / 100
+  if (Math.abs(z - 1) < 0.02) z = 1
+  if (z === ZOOM && !badge) return
+  ZOOM = z
+  document.documentElement.style.zoom = z === 1 ? '' : String(z)
+  document.documentElement.style.setProperty('--zoom', String(z)) // CSS vh/vw divide by it
+  if (save) store.set(ZOOM_KEY, z)
+  if (document.querySelector('.menu')) closeOverlays('.menu')
+  if (!badge || !document.body) return
+  zoomBadge ??= h('button', { class: 'zoom-badge', title: t('Reset zoom'), onClick: () => setZoom(1) })
+  zoomBadge.textContent = `${Math.round(z * 100)}%`
+  if (!zoomBadge.isConnected) document.body.append(zoomBadge)
+  clearTimeout(zoomBadgeTimer)
+  zoomBadgeTimer = setTimeout(() => zoomBadge.remove(), 1500)
+}
+function stepZoom(dir) {
+  if (dir === 0) return setZoom(1)
+  const i = ZOOM_STEPS.findIndex((s) => s >= ZOOM - 0.001)
+  const at = i < 0 ? ZOOM_STEPS.length - 1 : ZOOM_STEPS[i] > ZOOM + 0.001 && dir > 0 ? i - 1 : i
+  setZoom(ZOOM_STEPS[Math.min(ZOOM_STEPS.length - 1, Math.max(0, at + dir))])
+}
+/** Which way a key zooms: 1 in, -1 out, 0 reset, null not a zoom key. Same keys as Orca's on Windows, Linux and macOS. */
+function zoomKey(e) {
+  if (!(e.ctrlKey || e.metaKey) || e.altKey) return null
+  if (e.code === 'NumpadAdd' || e.key === '+' || e.key === '=' || e.code === 'Equal') return 1
+  if (e.code === 'NumpadSubtract' || e.key === '-' || e.key === '_' || e.code === 'Minus') return -1
+  if (!e.shiftKey && (e.code === 'Numpad0' || e.code === 'Digit0' || e.key === '0')) return 0
+  return null
+}
+{
+  const saved = Number(store.get(ZOOM_KEY, 1))
+  if (saved > 0 && saved !== 1) setZoom(saved, { save: false, badge: false })
+}
+window.addEventListener(
+  'keydown',
+  (e) => {
+    const dir = zoomKey(e)
+    if (dir === null || e.repeat) return
+    e.preventDefault()
+    if (dir === 0) return setZoom(1)
+    // Orca sees these keys too; if it zoomed the whole window (and this page with it), leave it at that
+    const dpr = window.devicePixelRatio
+    setTimeout(() => Math.abs(window.devicePixelRatio - dpr) < 0.001 && stepZoom(dir), 200)
+  },
+  true
+)
+let pinch = 0
+window.addEventListener(
+  'wheel',
+  (e) => {
+    if (!e.ctrlKey && !e.metaKey) return
+    e.preventDefault()
+    // a mouse wheel notch is one step; a trackpad pinch (small deltas) zooms smoothly
+    if (e.deltaMode === 0 && Math.abs(e.deltaY) < 40) {
+      pinch += e.deltaY
+      if (Math.abs(pinch) >= 2) setZoom(ZOOM * Math.exp(-pinch / 100)), (pinch = 0)
+    } else if (e.deltaY) stepZoom(e.deltaY < 0 ? 1 : -1)
+  },
+  { passive: false, capture: true }
+)
+
+/* =========================================================================
    feedback: toasts, dialogs, menus
    ========================================================================= */
 function toast(msg, kind = 'ok', ms, action) {
@@ -386,7 +466,7 @@ function combo(input, items, { empty = t('No match: type the host or user@host')
     const r = input.getBoundingClientRect()
     const below = innerHeight - r.bottom - 8
     const up = below < 160 && r.top > below
-    Object.assign(list.style, { position: 'fixed', left: r.left + 'px', width: r.width + 'px', right: 'auto', top: up ? 'auto' : r.bottom + 4 + 'px', bottom: up ? innerHeight - r.top + 4 + 'px' : 'auto', maxHeight: Math.min(232, (up ? r.top : below) - 8) + 'px' })
+    Object.assign(list.style, { position: 'fixed', left: zpx(r.left), width: zpx(r.width), right: 'auto', top: up ? 'auto' : zpx(r.bottom + 4), bottom: up ? zpx(innerHeight - r.top + 4) : 'auto', maxHeight: zpx(Math.min(232 * ZOOM, (up ? r.top : below) - 8)) })
   }
   const hide = () => {
     list.hidden = true
@@ -496,8 +576,8 @@ function menu(anchor, items, parent = null) {
   document.body.append(el)
   const point = menuPoint ?? (typeof anchor?.x === 'number' && !anchor.getBoundingClientRect ? anchor : null)
   menuPoint = null
-  const mw = el.offsetWidth
-  const mh = el.offsetHeight
+  const mw = el.offsetWidth * ZOOM
+  const mh = el.offsetHeight * ZOOM
   let left, top
   if (parent) {
     // Beside the item; to its left when there is no room on the right.
@@ -510,8 +590,8 @@ function menu(anchor, items, parent = null) {
     top = r.bottom + 4
     if (top + mh > window.innerHeight - 8) top = Math.max(8, r.top - mh - 4)
   }
-  el.style.left = left + 'px'
-  el.style.top = top + 'px'
+  el.style.left = zpx(left)
+  el.style.top = zpx(top)
   if (!parent) {
     // One outside-click and one key listener for the whole cascade, removed when it closes.
     const off = (e) => {
@@ -2392,7 +2472,7 @@ function syncDock() {
   if (!host) return
   const d = state.sheets.find((s) => s.dock)
   host.classList.toggle('docked', !!d)
-  if (d) host.style.setProperty('--dock-w', `${(d.el.isConnected ? d.el.getBoundingClientRect().width : 0) || store.get('sheetWidth', 0) || Math.min(560, host.clientWidth * 0.45)}px`)
+  if (d) host.style.setProperty('--dock-w', `${(d.el.isConnected ? d.el.offsetWidth : 0) || store.get('sheetWidth', 0) || Math.min(560, host.clientWidth * 0.45)}px`)
 }
 /** Show a commit in the docked pane (opening it if needed); the list keeps its place. */
 async function openDock(c) {
@@ -2443,10 +2523,10 @@ function placeSheet(el) {
       e.preventDefault()
       grip.setPointerCapture(e.pointerId)
       const right = host.getBoundingClientRect().right
-      const move = (ev) => ((el.style.width = `${Math.max(320, Math.min(right - ev.clientX, host.clientWidth - 120))}px`), syncDock())
+      const move = (ev) => ((el.style.width = `${Math.max(320, Math.min((right - ev.clientX) / ZOOM, host.clientWidth - 120))}px`), syncDock())
       const up = () => {
         grip.removeEventListener('pointermove', move)
-        store.set(el.classList.contains('wide-sheet') ? 'wideSheetWidth' : 'sheetWidth', el.getBoundingClientRect().width)
+        store.set(el.classList.contains('wide-sheet') ? 'wideSheetWidth' : 'sheetWidth', el.offsetWidth)
       }
       grip.addEventListener('pointermove', move)
       grip.addEventListener('pointerup', up, { once: true })
@@ -3593,7 +3673,7 @@ function toggleInline(c, row) {
     const main = $('#main')
     const r = el.getBoundingClientRect()
     const m = main.getBoundingClientRect()
-    if (r.bottom > m.bottom) main.scrollBy({ top: Math.min(r.bottom - m.bottom + 8, r.top - m.top - 40), behavior: 'smooth' })
+    if (r.bottom > m.bottom) main.scrollBy({ top: Math.min(r.bottom - m.bottom + 8, r.top - m.top - 40) / ZOOM, behavior: 'smooth' })
   })
 }
 
@@ -8693,8 +8773,8 @@ function showTip(target) {
   const below = r.bottom + gap + t.height <= innerHeight - 4
   const top = below ? r.bottom + gap : r.top - gap - t.height
   const left = Math.max(6, Math.min(innerWidth - t.width - 6, r.left + r.width / 2 - t.width / 2))
-  el.style.left = `${Math.round(left)}px`
-  el.style.top = `${Math.round(Math.max(4, top))}px`
+  el.style.left = zpx(Math.round(left))
+  el.style.top = zpx(Math.round(Math.max(4, top)))
   el.dataset.side = below ? 'below' : 'above'
   el.classList.add('on')
 }

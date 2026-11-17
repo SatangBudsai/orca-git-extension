@@ -10,6 +10,7 @@
   "Open this panel inside Orca": "このパネルは Orca 内で開いてください",
   "Git Control was updated. Reload this tab to use the new version (approve it in Orca first if it asks).": "Git Control が更新されました。新しいバージョンを使うにはこのタブを再読み込みしてください (Orca で確認を求められたら先に承認してください)。",
   "Reload": "再読み込み",
+  "Reset zoom": "ズームをリセット",
   "OK": "OK",
   "Cancel": "キャンセル",
   "No match: type the host or user@host": "一致なし: ホストまたは user@host を入力してください",

@@ -10,6 +10,7 @@
   "Open this panel inside Orca": "เปิดแผงนี้ใน Orca",
   "Git Control was updated. Reload this tab to use the new version (approve it in Orca first if it asks).": "Git Control อัปเดตแล้ว รีโหลดแท็บนี้เพื่อใช้เวอร์ชันใหม่ (ถ้า Orca ถาม ให้อนุมัติก่อน)",
   "Reload": "รีโหลด",
+  "Reset zoom": "รีเซ็ตการซูม",
   "OK": "ตกลง",
   "Cancel": "ยกเลิก",
   "No match: type the host or user@host": "ไม่พบ: พิมพ์ host หรือ user@host",

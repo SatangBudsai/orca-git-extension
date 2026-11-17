@@ -10,6 +10,7 @@
   "Open this panel inside Orca": "Abre este panel dentro de Orca",
   "Git Control was updated. Reload this tab to use the new version (approve it in Orca first if it asks).": "Git Control se actualizó. Recarga esta pestaña para usar la nueva versión (apruébala antes en Orca si te lo pide).",
   "Reload": "Recargar",
+  "Reset zoom": "Restablecer zoom",
   "OK": "Aceptar",
   "Cancel": "Cancelar",
   "No match: type the host or user@host": "Sin coincidencias: escribe el host o usuario@host",

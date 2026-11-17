@@ -173,6 +173,8 @@ When one cannot be reached, its row says why and what to do, step by step.
 ### Work by keyboard
 **Ctrl+.** opens every command by name (fetch, pull, push, stash, new branch, any tab). In the graph,
 ↑ ↓ (or j k) move, Enter opens, / searches and Esc closes. **Ctrl+Z** undoes the last action.
+**Ctrl + = / - / 0** (**Cmd** on macOS), Ctrl+wheel or a trackpad pinch zoom Git Control in and out; the tab and
+the sidebar each keep their own level.
 
 ### And also
 - **Fetch, Pull, Push** show how many commits wait (↑ green to push, ↓ amber to pull, red when the branch
@@ -232,6 +234,7 @@ scripts, and on Windows the SSH tests use the `sh` that comes with Git (symlink 
 
 ```sh
 node e2e.mjs <plugin folder> <shots folder>       # the full tab, clicked through like a person
+node zoom.mjs <plugin folder> <shots folder>      # zoom keys, wheel and pinch; menus and tooltips still placed right
 node mobile.mjs <plugin folder> <shots folder>    # phone size, loaded the way Orca's web client loads it
 node sidebar.mjs <plugin folder> <shots folder>   # the right-sidebar panel at several widths
 node worker-api.mjs github|gitlab|bitbucket       # merge requests, reviews and CI through the Git login
