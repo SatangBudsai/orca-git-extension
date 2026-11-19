@@ -204,7 +204,7 @@ try {
     ok(un && /GitHub does not let you take back/.test(un.message), 'github revoke explains')
   } else if (KIND === 'bitbucket') {
     const mpost = log.find((x) => x.method === 'POST' && x.url.endsWith('/merge'))
-    ok(JSON.stringify(mpost?.body) === JSON.stringify({ merge_strategy: 'squash', close_source_branch: true }), 'bitbucket merge request', JSON.stringify(mpost))
+    ok(JSON.stringify(mpost?.body) === JSON.stringify({ type: 'pullrequest_merge_parameters', merge_strategy: 'squash', close_source_branch: true }), 'bitbucket merge request', JSON.stringify(mpost))
     log.length = 0
     const un = await call('reviews.act', { ...it, action: 'unapprove' }).catch((e) => e)
     ok(un?.ok && log.some((x) => x.method === 'DELETE' && x.url.endsWith('/pullrequests/5/approve')), 'bitbucket takes back an approval', un?.message)

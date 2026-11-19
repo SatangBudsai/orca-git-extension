@@ -248,6 +248,7 @@ node sidebar.mjs <plugin folder> <shots folder>   # the right-sidebar panel at s
 node worker-api.mjs github|gitlab|bitbucket       # merge requests, reviews and CI through the Git login
 node bitbucket.mjs <plugin folder> <shots folder> # Bitbucket Cloud end to end: sign-in, list, approve, Pipelines, new PR
 node bitbucket-login.mjs                          # "Save it in Git" / "Replace the saved login" run in real shells
+node bitbucket-live.mjs <plugin folder> <shots folder> # the real api.bitbucket.org, read only, on a public repository (no account)
 node merge-queue.mjs                              # Approve & merge on several: one at a time per project
 node statusbar.mjs                                # the status bar items: Git never disappears, Repos counts
 node github-ratelimit.mjs                         # GitHub searches shared, paused at the rate limit

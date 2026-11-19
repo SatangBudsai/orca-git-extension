@@ -12,7 +12,8 @@
     "worker": "node worker-api.mjs github && node worker-api.mjs gitlab && node worker-api.mjs bitbucket && node worker-ops.mjs && node remote-ops.mjs",
     "i18n": "node ../tools/i18n.mjs --check",
     "zoom": "node zoom.mjs .. ../.orca/e2e",
-    "bitbucket": "node bitbucket.mjs .. ../.orca/e2e && node bitbucket-login.mjs"
+    "bitbucket": "node bitbucket.mjs .. ../.orca/e2e && node bitbucket-login.mjs",
+    "bitbucket-live": "node bitbucket-live.mjs .. ../.orca/e2e"
   },
   "devDependencies": {
     "puppeteer-core": "25.16.0"

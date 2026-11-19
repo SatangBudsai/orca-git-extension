@@ -45,6 +45,9 @@ const S3 = '{bbbbbbbb-0000-0000-0000-000000000003}'
 const bb = {
   auth: 'api', // 'oauth': only Bearer works, and only for /user (an OAuth token without the pull request scope)
   limit: false, // every pull request list answers 429
+  noAccount: false, // a token without the account scope: /user answers 403
+  paged: false, // the open list comes in two pages ("next")
+  merge: null, // { allowed: [...], async: true }: the target branch's strategies; a merge done in the background
   calls: [],
   approved: new Set(),
   created: []
@@ -79,8 +82,8 @@ const pipeline = (uuid) =>
 const steps = (uuid) =>
   uuid === P1
     ? [
-        { uuid: S1, name: 'Build', state: { name: 'COMPLETED', result: { name: 'SUCCESSFUL' } }, duration_in_seconds: 40 },
-        { uuid: S2, name: 'Unit tests', state: { name: 'COMPLETED', result: { name: 'FAILED' } }, duration_in_seconds: 50 }
+        { uuid: S1, name: 'Build', state: { name: 'COMPLETED', result: { name: 'SUCCESSFUL' } }, started_on: iso(30), duration_in_seconds: 40 },
+        { uuid: S2, name: 'Unit tests', state: { name: 'COMPLETED', result: { name: 'FAILED' } }, started_on: iso(29), duration_in_seconds: 50 }
       ]
     : [{ uuid: S3, name: 'Build', state: { name: 'IN_PROGRESS' } }]
 
@@ -105,16 +108,37 @@ const server = http.createServer((rq, rs) => {
     }
     if (!basicOk) return send(401, { type: 'error', error: { message: 'Unauthorized' } })
     const R = '/repositories/ws/app'
-    if (p === '/user') return send(200, ME)
+    if (p === '/user') return bb.noAccount ? send(403, { type: 'error', error: { message: 'Your credentials lack one or more required privilege scopes.', detail: { required: ['account'], granted: ['repository', 'pullrequest'] } } }) : send(200, ME)
     if (bb.limit && /pullrequests/.test(p)) return send(429, { type: 'error', error: { message: 'Rate limit for this resource has been exceeded' } }, { 'Retry-After': '2' })
     // "every pull request I opened": refused, as Bruno saw it
     if (p === `/pullrequests/${ME.uuid}`) return send(403, { type: 'error', error: { message: 'Your credentials lack one or more required privilege scopes.' } })
+    if (rq.method === 'GET' && p === `${R}/pullrequests` && bb.paged && u.searchParams.get('state') === 'OPEN') {
+      // a next link is a full URL on the API, as the real one gives it
+      const pg = +(u.searchParams.get('page') || 1)
+      return send(200, pg === 1 ? { values: [pr(21)], pagelen: 1, next: `http://${rq.headers.host}/2.0${R}/pullrequests?state=OPEN&page=2` } : { values: [pr(22)], pagelen: 1 })
+    }
     if (rq.method === 'GET' && p === `${R}/pullrequests`) return send(200, { values: u.searchParams.get('state') === 'MERGED' ? [merged(11), merged(12)] : [pr(21), pr(22)], pagelen: 50 })
+    if (rq.method === 'GET' && p === `${R}/refs/branches/main`) return send(200, { name: 'main', ...(bb.merge?.allowed ? { merge_strategies: bb.merge.allowed, default_merge_strategy: bb.merge.allowed[0] } : {}) })
+    const tm = p.match(new RegExp(`^${R}/pullrequests/(\\d+)/merge/task-status/t1$`))
+    if (tm) {
+      // pending twice, then done (or failed: a conflict)
+      if (++bb.taskPolls < 3) return send(200, { task_status: 'PENDING' })
+      if (bb.merge?.fail) return send(400, { type: 'error', error: { message: 'Merge conflict in app.js' } })
+      bb.mergedIds.add(+tm[1])
+      return send(200, { task_status: 'SUCCESS', merge_result: { ...pr(+tm[1]), state: 'MERGED' } })
+    }
     const m = p.match(new RegExp(`^${R}/pullrequests/(\\d+)(/[\\w-]+)?$`))
     if (m) {
       const id = +m[1]
       const sub = m[2] || ''
-      if (rq.method === 'GET' && !sub) return send(200, pr(id))
+      if (rq.method === 'GET' && !sub) return send(200, bb.mergedIds?.has(id) ? { ...pr(id), state: 'MERGED' } : pr(id))
+      if (rq.method === 'POST' && sub === '/merge') {
+        bb.mergedIds ??= new Set()
+        if (!bb.merge?.async) return bb.mergedIds.add(id), send(200, { ...pr(id), state: 'MERGED' })
+        bb.taskPolls = 0
+        return send(202, { task_status: 'PENDING', links: { self: { href: `http://${rq.headers.host}/2.0${R}/pullrequests/${id}/merge/task-status/t1` } } })
+      }
+      if (rq.method === 'GET' && sub === '/merge') return send(404, {})
       if (rq.method === 'POST' && sub === '/approve') return bb.approved.add(id), send(200, { approved: true, user: ME })
       if (rq.method === 'DELETE' && sub === '/approve') return bb.approved.delete(id), send(204, '')
       if (sub === '/statuses') return send(200, { values: id === 21 ? [{ state: 'INPROGRESS' }] : [{ state: 'SUCCESSFUL' }] })
@@ -145,7 +169,10 @@ const server = http.createServer((rq, rs) => {
       if (rq.method === 'GET' && !rest) return send(200, pipeline(id))
       if (rq.method === 'GET' && rest === '/steps/') return send(200, { values: steps(id) })
       if (rq.method === 'GET' && rest === `/steps/${S2}/log`) return send(200, '\x1b[32m+ npm test\x1b[0m\nok 1 adds\nnot ok 2 subtracts\nERROR: tests failed\r\n')
-      if (rq.method === 'GET' && /\/steps\/.*\/log$/.test(rest)) return send(404, { type: 'error', error: { message: 'no log yet' } })
+      // like the real one: a log Bitbucket does not give (not started, or no longer kept) answers this 404
+      if (rq.method === 'GET' && /\/steps\/.*\/log$/.test(rest)) return send(404, { error: { message: 'Not found', detail: 'The value provided is not a valid uuid.' } })
+      const sm = rest.match(/^\/steps\/(\{[\w-]+\})$/)
+      if (rq.method === 'GET' && sm) return send(200, steps(id).find((x) => x.uuid === sm[1]) || {})
       if (rq.method === 'POST' && rest === '/stopPipeline') return send(204, '')
     }
     send(404, { type: 'error', error: { message: `no route ${rq.method} ${p}` } })
@@ -234,6 +261,19 @@ try {
   bb.limit = false
   await sleep(2200)
 
+  // a token without the account scope (the Connect card asks only for repositories and pull requests):
+  // the list still comes, only "mine" / "to review" need who I am
+  bb.noAccount = true
+  r = await call('reviews.list', { repo: REPO, fresh: true })
+  ok(prov(r)?.signedIn && r.items.filter((x) => x.host === HOST).length === 2 && !r.errors.length, 'a token that cannot say who it is: the pull requests are still listed, signed in, no error', JSON.stringify([prov(r), r.items.map((x) => x.number), r.errors]))
+  bb.noAccount = false
+
+  // more than one page of open pull requests: every page is read
+  bb.paged = true
+  r = await call('reviews.list', { repo: REPO, fresh: true })
+  ok(JSON.stringify(r.items.filter((x) => x.host === HOST).map((x) => x.number).sort()) === '[21,22]' && calls('GET', /\/pullrequests$/).some((c) => /page=2/.test(c.query)), 'open pull requests over more pages: all listed (Bitbucket\'s next link followed)', JSON.stringify([r.items.map((x) => x.number), r.errors]))
+  bb.paged = false
+
   // the pull request pages
   const d21 = await call('reviews.detail', it21)
   const d22 = await call('reviews.detail', it22)
@@ -242,6 +282,27 @@ try {
   await call('reviews.act', { ...it21, action: 'approve' })
   ok(calls('POST', /\/pullrequests\/21\/approve$/).length === 1, 'Approve posts to Bitbucket')
   bb.approved.clear()
+
+  // Merge: the strategy the target branch allows, and a merge Bitbucket finishes in the background
+  process.env.GITX_QUEUE_POLL = '20'
+  bb.calls.length = 0
+  bb.merge = { allowed: ['squash', 'fast_forward'] }
+  const noMc = await call('reviews.act', { ...it21, action: 'merge', options: { squash: false } }).catch((e) => e)
+  const mb = calls('POST', /\/pullrequests\/21\/merge$/)[0]?.body
+  ok(noMc?.ok && mb?.type === 'pullrequest_merge_parameters' && !('merge_strategy' in mb), 'a branch without merge commits: Merge uses the branch\'s own default, not a refused merge_commit', JSON.stringify([noMc?.message, mb]))
+  bb.mergedIds.clear()
+  bb.merge = { allowed: ['merge_commit'] }
+  const noSq = await call('reviews.act', { ...it21, action: 'merge', options: { squash: true } }).then(() => null, (e) => e)
+  ok(/does not allow a squash merge/.test(noSq?.message || '') && !calls('POST', /\/merge$/).slice(1).length, 'squash on a branch that does not allow it: says so, nothing sent', noSq?.message)
+  bb.merge = { allowed: ['merge_commit', 'squash'], async: true }
+  const late = await call('reviews.act', { ...it21, action: 'merge', options: { squash: true } }).catch((e) => e)
+  ok(late?.ok && late.state === 'merged' && calls('GET', /\/merge\/task-status\/t1$/).length === 3, 'a long merge (HTTP 202): followed to its end', JSON.stringify([late?.message, calls('GET', /task-status/).length]))
+  bb.mergedIds.clear()
+  bb.merge = { allowed: ['merge_commit'], async: true, fail: true }
+  const conflict = await call('reviews.act', { ...it21, action: 'merge', options: {} }).then(() => null, (e) => e)
+  ok(/Merge conflict in app\.js/.test(conflict?.message || ''), 'a long merge that fails: Bitbucket\'s reason shown', conflict?.message)
+  bb.merge = null
+  bb.mergedIds.clear()
 
   // people for a new pull request: the default reviewer picked, members to choose from
   const people = await call('mr.people', { repo: REPO })
@@ -267,13 +328,15 @@ try {
   ok(log.log.includes('ERROR: tests failed') && !log.log.includes('\x1b'), 'a step\'s log, without colour codes', JSON.stringify(log))
   const empty = await op('jobLog', { id: `${P2}~${S3}` })
   ok(empty.log === '', 'a step that has not started: an empty log, not an error', JSON.stringify(empty))
+  const gone = await op('jobLog', { id: `${P1}~${S1}` }).then(() => null, (e) => e)
+  ok(/did not give this step's log/.test(gone?.message || '') && /not a valid uuid|Not found/.test(gone?.message || ''), 'a step that ran but whose log Bitbucket does not give: says so, not an empty log', gone?.message)
   bb.calls.length = 0
   await op('pipelineAct', { id: P1, action: 'retry' })
   const rerun = calls('POST', /\/pipelines\/$/)[0]
-  ok(JSON.stringify(rerun?.body) === JSON.stringify({ target: { type: 'pipeline_ref_target', ref_type: 'branch', ref_name: 'main', commit: { type: 'commit', hash: 'ccc3333' }, selector: { type: 'branches', pattern: 'main' } } }), 'Retry all runs the same pipeline on the same commit', JSON.stringify(rerun))
+  ok(JSON.stringify(rerun?.body) === JSON.stringify({ target: { type: 'pipeline_ref_target', ref_type: 'branch', ref_name: 'main', commit: { type: 'commit', hash: 'ccc3333' } } }), 'Retry all runs the same pipeline on the same commit (Bitbucket picks it again from the commit)', JSON.stringify(rerun))
   await op('pipelineAct', { id: P2, action: 'retry' })
   const rerun2 = calls('POST', /\/pipelines\/$/)[1]
-  ok(rerun2?.body?.target?.type === 'pipeline_pullrequest_target' && rerun2.body.target.pullrequest?.id === '21' && rerun2.body.target.source === 'feat-a', 'Retry all of a pull request pipeline', JSON.stringify(rerun2))
+  ok(rerun2?.body?.target?.type === 'pipeline_pullrequest_target' && rerun2.body.target.pullrequest?.id === '21' && rerun2.body.target.source === 'feat-a' && rerun2.body.target.selector?.type === 'pull-requests' && rerun2.body.target.selector.pattern === '**', "Retry all of a pull request pipeline (as in Bitbucket's example)", JSON.stringify(rerun2))
   await op('pipelineAct', { id: P2, action: 'cancel' })
   ok(calls('POST', /\/stopPipeline$/).length === 1, 'Cancel stops the pipeline')
   const nope = await op('pipelineAct', { id: P1, action: 'retryJob', job: `${P1}~${S2}` }).then(() => null, (e) => e)

@@ -9054,7 +9054,7 @@ function reviewRow(it, { onSelect, filter, showRepo = filter === 'all' } = {}) {
       { class: 'review-actions' },
       h('span', { class: 'rv-result' }),
       !done && !isMine(it) && !it.myApproved && h('button', { class: 'btn sm rv-approve', title: t('Approve {ref}', { ref: mrRef(it) }), onClick: act('approve') }, icon('check', 12), t('Approve')),
-      !done && h('button', { class: `btn sm rv-merge ${it.myApproved || isMine(it) ? 'primary' : ''}`, title: ciBusy(it) ? t('GitLab merges {ref} as soon as its pipeline passes', { ref: mrRef(it) }) : t('Merge {ref} now (if it can be merged)', { ref: mrRef(it) }), onClick: act('merge') }, icon('merge', 12), ciBusy(it) ? t('Merge when CI passes') : t('Merge now')),
+      !done && h('button', { class: `btn sm rv-merge ${it.myApproved || isMine(it) ? 'primary' : ''}`, title: ciBusy(it) ? (it.provider === 'gitlab' ? t('GitLab merges {ref} as soon as its pipeline passes', { ref: mrRef(it) }) : t('Merges in the background as soon as the pipeline passes (and whatever else it waits for)')) : t('Merge {ref} now (if it can be merged)', { ref: mrRef(it) }), onClick: act('merge') }, icon('merge', 12), ciBusy(it) ? t('Merge when CI passes') : t('Merge now')),
       h('button', { class: 'icon-btn', title: t('Open the {noun} in the browser', { noun }), onClick: (e) => (e.stopPropagation(), open()) }, icon('open', 14)),
       h('span', { class: 'review-chev', 'aria-hidden': 'true' }, icon('right', 14))
     )
@@ -9737,7 +9737,8 @@ async function openPipelines({ branch, sha, openId } = {}) {
         }
       }
     }
-    const running = p.state === 'running' || p.state === 'pending'
+    // a Bitbucket pipeline paused at a manual step is still running there: Cancel stops it
+    const running = p.state === 'running' || p.state === 'pending' || (data.kind === 'bitbucket' && p.state === 'manual')
     const failed = jobs.filter((j) => j.state === 'failed')
     const stages = [...new Set(jobs.map((j) => j.stage))]
     append(clear(body), [
@@ -9797,7 +9798,7 @@ async function openPipelines({ branch, sha, openId } = {}) {
     try {
       r = await call('jobLog', { id: j.id })
     } catch (e) {
-      return append(clear(body), [h('div', { class: 'history-bar' }, h('button', { class: 'btn sm', onClick: () => showPipeline(p, data) }, icon('left', 12), p.name)), h('div', { class: 'empty' }, icon('alert', 28), h('div', null, e.message))])
+      return append(clear(body), [h('div', { class: 'history-bar' }, h('button', { class: 'btn sm', onClick: () => showPipeline(p, data) }, icon('left', 12), p.name), h('span', { class: 'grow' }), j.url && h('button', { class: 'btn sm pipe-log-open', onClick: () => openLink(j.url) }, icon('open', 12), t('Open in browser'))), h('div', { class: 'empty' }, icon('alert', 28), h('div', null, e.message))])
     }
     if (!alive()) return
     const BAD = /(##\[error\]|\berror\b|\bfailed\b|\bfailure\b|exception|✗|✖|ERR!|FATAL|exit code [1-9])/i
