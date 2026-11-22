@@ -181,10 +181,19 @@ const ignoredGraphIn = new Set()
 async function request(name, input, timeoutMs = 30000) {
   if (!hasOrca) throw new Error(t('Open this panel inside Orca'))
   input = JSON.parse(JSON.stringify(input ?? {})) // drop undefined values: Orca rejects them as invalid input
-  try {
+  const send = async (name, input) => {
     if (window.orca.plugin?.request) return await window.orca.plugin.request(name, input, { timeoutMs })
     const r = await window.orca.host.call('plugin.request', { name, input, timeoutMs })
     return r.output
+  }
+  try {
+    const out = await send(name, input)
+    // An answer over Orca's 1 MiB limit (refs with many tags) comes in parts: fetch the rest and join them
+    if (!out || typeof out !== 'object' || !out.__parts) return out
+    const { id, count } = out.__parts
+    let text = out.part
+    for (let index = 1; index < count; index++) text += (await send('answer.part', { id, index })).part
+    return JSON.parse(text)
   } catch (e) {
     if (/changed or is no longer approved/i.test(e?.message || '')) pluginUpdated()
     throw e

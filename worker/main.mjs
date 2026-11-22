@@ -4601,6 +4601,43 @@ export default function activate(orca) {
   // ("answered with a non-JSON value"). Every handler's answer is made plain JSON on the way out.
   const handle = orca.panels.handle.bind(orca.panels)
   const MAX_ANSWER = 960 * 1024
+  const MAX_TOTAL = 48 * 1024 * 1024
+  // Oversized answers wait here for the panel to fetch their remaining parts (answer.part)
+  const parts = new Map() // id -> { chunks, at }
+  let partSeq = 0
+  const chunkAnswer = (text) => {
+    const now = Date.now()
+    for (const [k, v] of parts) if (now - v.at > 120_000) parts.delete(k)
+    const chunks = []
+    // each part must stay under the limit once JSON-encoded as a string (escapes, multi-byte characters)
+    for (let i = 0, n = 300_000; i < text.length; ) {
+      const piece = text.slice(i, i + n)
+      if (Buffer.byteLength(JSON.stringify(piece)) > MAX_ANSWER - 1024 && n > 1024) {
+        n = n >> 1
+        continue
+      }
+      chunks.push(piece)
+      i += piece.length
+    }
+    const id = `${now.toString(36)}.${++partSeq}`
+    parts.set(id, { chunks, at: now })
+    return { __parts: { id, count: chunks.length }, part: chunks[0] }
+  }
+  const tooLarge = (name, raw, text) => {
+    const mb = (Buffer.byteLength(text) / 1048576).toFixed(1)
+    const op = name === 'git' ? raw?.op : name
+    if (op === 'refs') return `The repository has too many branches and tags to show (${mb} MB)`
+    if (op === 'status') return `The answer was too large to show (${mb} MB). If the repository has many new files, add their folder (build output, node_modules…) to .gitignore.`
+    return `The answer was too large to show (${mb} MB)`
+  }
+  handle('answer.part', ({ id, index } = {}) => {
+    const p = parts.get(id)
+    if (!p || !Number.isInteger(index) || index < 1 || index >= p.chunks.length) throw new GitError('That answer is no longer available; refresh')
+    p.at = Date.now()
+    const part = p.chunks[index]
+    if (index === p.chunks.length - 1) parts.delete(id)
+    return { part }
+  })
   orca = {
     ...orca,
     panels: {
@@ -4612,9 +4649,12 @@ export default function activate(orca) {
           const r = await onHost(host, () => fn(input))
           if (r === undefined) return null
           const text = JSON.stringify(r)
-          // Orca refuses answers over 1 MiB and the whole page breaks: say what happened instead
-          if (text.length > MAX_ANSWER) throw new GitError(`The answer was too large to show (${(text.length / 1048576).toFixed(1)} MB). If the repository has many new files, add their folder (build output, node_modules…) to .gitignore.`)
-          return JSON.parse(text)
+          // Orca refuses answers over 1 MiB (counted in UTF-8 bytes) and the whole page breaks. A big but
+          // valid answer (refs of a repository with ~20k tags) goes over in parts the panel joins again;
+          // only an answer beyond MAX_TOTAL is refused, with a message that says what made it big.
+          if (Buffer.byteLength(text) <= MAX_ANSWER) return JSON.parse(text)
+          if (Buffer.byteLength(text) > MAX_TOTAL) throw new GitError(tooLarge(name, raw, text))
+          return chunkAnswer(text)
         })
     }
   }

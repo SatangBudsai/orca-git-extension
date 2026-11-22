@@ -107,6 +107,22 @@ try {
   await op('rebaseInteractive', { base: 'HEAD~2', todo })
   const after = fs.readdirSync(process.env.TEMP || '/tmp').filter((f) => f.startsWith('orca-git-rebase-')).length
   ok(after === before, 'rebase temp dir cleaned')
+  // many tags (issue #8): refs over Orca's 1 MiB answer limit come in parts that join back losslessly
+  const tip = g(repo, 'rev-parse', 'HEAD')
+  const N = 22000
+  const lines = Array.from({ length: N }, (_, i) => `create refs/tags/release/v${i}-ทดสอบ-${'x'.repeat(40)} ${tip}`).join('\n') + '\n'
+  execFileSync('git', ['update-ref', '--stdin'], { cwd: repo, input: lines })
+  const first = await op('refs')
+  ok(first?.__parts?.count > 1 && JSON.stringify(first).length < 960 * 1024, 'big refs answer split in parts', JSON.stringify(first?.__parts))
+  let joined = first.part
+  for (let index = 1; index < first.__parts.count; index++) {
+    const p = await handlers['answer.part']({ id: first.__parts.id, index })
+    ok(Buffer.byteLength(JSON.stringify(p)) <= 960 * 1024, `part ${index} under the limit`)
+    joined += p.part
+  }
+  const all = JSON.parse(joined)
+  ok(all.tags.length === N && all.local.some((b) => b.current), 'every tag arrives', all.tags.length)
+  ok(await Promise.resolve().then(() => handlers['answer.part']({ id: first.__parts.id, index: 1 })).then(() => false, () => true), 'parts are dropped once fetched')
 } catch (x) {
   fails++
   console.log('CRASH', x.stack)
